@@ -139,7 +139,7 @@ function sendCard(psid, title, subtitle, photo, whatsapp) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       recipient: { id: psid },
-      message: { attachment: { type: "template", payload: { template_type: "generic", elements: [{ title, subtitle, image_url: photo, buttons: [{ type: "web_url", url: trackUrl, title: buttonText }] }] } } }
+      message: { attachment: { type: "template", payload: { template_type: "generic", elements: [{ title, subtitle, image_url: photo, default_action: { type: "web_url", url: trackUrl, webview_height_ratio: "tall" }, buttons: [{ type: "web_url", url: trackUrl, title: buttonText }] }] } } }
     })
   }).then(r => r.json()).then(data => console.log('Card sent:', data.message_id || data.error?.message));
 }
