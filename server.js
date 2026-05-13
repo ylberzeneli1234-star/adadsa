@@ -11,19 +11,27 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'abc123';
 const PAGE_ID = process.env.PAGE_ID || '';
 const PORT = process.env.PORT || 3000;
 
-// Auto-detects Railway URL — no need to hardcode anymore
 const PUBLIC_URL = process.env.RAILWAY_PUBLIC_DOMAIN
   ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
   : (process.env.PUBLIC_URL || '');
+
+const DATA_DIR = fs.existsSync('/data') ? '/data' : '.';
+const SETTINGS_FILE = `${DATA_DIR}/settings.json`;
+const FANS_FILE = `${DATA_DIR}/fans.json`;
+const STATS_FILE = `${DATA_DIR}/stats.json`;
+console.log(`💾 Data directory: ${DATA_DIR}`);
+
+// Track when the bot started (for uptime display)
+const STARTED_AT = new Date();
 
 // ============================================
 // DATA FUNCTIONS
 // ============================================
 function loadSettings() {
   try {
-    let s = JSON.parse(fs.readFileSync('settings.json', 'utf8'));
-    // Make sure buttonText exists even on old saved settings
+    let s = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
     if (!s.buttonText) s.buttonText = "WHATSAPP 📞";
+    if (s.baselineFans === undefined) s.baselineFans = 0;
     return s;
   }
   catch {
@@ -41,22 +49,29 @@ function loadSettings() {
       buttonText: "WHATSAPP 📞",
       broadcastTime: "07:30",
       timezone: "UTC",
-      broadcastEnabled: true
+      broadcastEnabled: true,
+      baselineFans: 0
     };
   }
 }
 
-function saveSettings(s) { fs.writeFileSync('settings.json', JSON.stringify(s)); }
-function loadFans() { try { return JSON.parse(fs.readFileSync('fans.json', 'utf8')); } catch { return []; } }
-function saveFans(f) { fs.writeFileSync('fans.json', JSON.stringify(f)); }
+function saveSettings(s) { fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s)); }
+function loadFans() { try { return JSON.parse(fs.readFileSync(FANS_FILE, 'utf8')); } catch { return []; } }
+function saveFans(f) { fs.writeFileSync(FANS_FILE, JSON.stringify(f)); }
 function isFanSaved(psid) { return loadFans().includes(psid); }
 
 function loadStats() {
-  try { return JSON.parse(fs.readFileSync('stats.json', 'utf8')); }
-  catch { return { clicks: [], messagesSent: 0, messagesFailed: 0, fansAdded: [] }; }
+  try { return JSON.parse(fs.readFileSync(STATS_FILE, 'utf8')); }
+  catch {
+    return {
+      clicks: [], messagesSent: 0, messagesFailed: 0,
+      fansAdded: [], reads: [], readers: [],
+      deliveries: [], delivered: []
+    };
+  }
 }
 
-function saveStats(s) { fs.writeFileSync('stats.json', JSON.stringify(s)); }
+function saveStats(s) { fs.writeFileSync(STATS_FILE, JSON.stringify(s)); }
 
 function trackClick(psid) {
   let stats = loadStats();
@@ -68,6 +83,24 @@ function trackMessage(success) {
   let stats = loadStats();
   if (success) stats.messagesSent = (stats.messagesSent || 0) + 1;
   else stats.messagesFailed = (stats.messagesFailed || 0) + 1;
+  saveStats(stats);
+}
+
+function trackRead(psid, watermark) {
+  let stats = loadStats();
+  if (!stats.reads) stats.reads = [];
+  if (!stats.readers) stats.readers = [];
+  stats.reads.push({ psid, watermark, time: new Date().toISOString() });
+  if (!stats.readers.includes(psid)) stats.readers.push(psid);
+  saveStats(stats);
+}
+
+function trackDelivery(psid, watermark) {
+  let stats = loadStats();
+  if (!stats.deliveries) stats.deliveries = [];
+  if (!stats.delivered) stats.delivered = [];
+  stats.deliveries.push({ psid, watermark, time: new Date().toISOString() });
+  if (!stats.delivered.includes(psid)) stats.delivered.push(psid);
   saveStats(stats);
 }
 
@@ -144,9 +177,7 @@ function sendMessage(psid, text) {
 }
 
 function sendCard(psid, title, subtitle, photo, whatsapp) {
-  // Button text is now read from settings (editable in dashboard)
   const buttonText = loadSettings().buttonText || "WHATSAPP 📞";
-  // Tracking URL — auto-built from Railway's public domain
   const trackUrl = `${PUBLIC_URL}/track?psid=${psid}`;
   return fetch(`https://graph.facebook.com/v2.6/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
     method: 'POST',
@@ -170,6 +201,15 @@ function sendCard(psid, title, subtitle, photo, whatsapp) {
   }).then(r => r.json()).then(data => console.log('Card sent:', data.message_id || data.error?.message));
 }
 
+// Helper: human readable uptime
+function uptimeText() {
+  const ms = Date.now() - STARTED_AT.getTime();
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
 // ============================================
 // CONTROL PANEL
 // ============================================
@@ -177,16 +217,30 @@ app.get('/', (req, res) => {
   let fans = loadFans();
   let settings = loadSettings();
   let stats = loadStats();
-  let today = getTodaysMessage();
 
-  // Stats calculations
   let todayStr = new Date().toISOString().split('T')[0];
   let clicksToday = (stats.clicks || []).filter(c => c.time.startsWith(todayStr)).length;
   let totalClicks = (stats.clicks || []).length;
   let weekAgo = new Date(Date.now() - 7*24*60*60*1000).toISOString();
   let fansThisWeek = (stats.fansAdded || []).filter(f => f.time > weekAgo).length;
 
-  // Clicks by day chart data
+  // Baseline / growth
+  let baseline = settings.baselineFans || 0;
+  let growth = Math.max(fans.length - baseline, 0);
+  let growthPct = baseline > 0 ? Math.round((growth / baseline) * 100) : 0;
+
+  // Read & delivery stats
+  let uniqueReaders = (stats.readers || []).length;
+  let totalOpens = (stats.reads || []).length;
+  let opensToday = (stats.reads || []).filter(r => r.time.startsWith(todayStr)).length;
+  let uniqueDelivered = (stats.delivered || []).length;
+  let totalDeliveries = (stats.deliveries || []).length;
+
+  // Funnel rates
+  let deliveryRate = fans.length > 0 ? Math.round((uniqueDelivered / fans.length) * 100) : 0;
+  let openRate = uniqueDelivered > 0 ? Math.round((uniqueReaders / uniqueDelivered) * 100) : 0;
+  let clickRate = uniqueReaders > 0 ? Math.round((totalClicks / uniqueReaders) * 100) : 0;
+
   let clicksByDay = {};
   (stats.clicks || []).forEach(c => {
     let day = c.time.split('T')[0];
@@ -198,7 +252,6 @@ app.get('/', (req, res) => {
     .map(([day, count]) => `<tr><td style="padding:6px 10px;">${day}</td><td style="padding:6px 10px;"><strong>${count}</strong> clicks</td></tr>`)
     .join('');
 
-  // Photo previews
   let photoRows = settings.photos.map((p, i) => `
     <div style="display:inline-block;margin:5px;text-align:center;">
       <img src="${p}" style="width:100px;height:80px;object-fit:cover;border-radius:8px;border:2px solid #ddd;"/>
@@ -206,6 +259,10 @@ app.get('/', (req, res) => {
       <br/><a href="/remove-photo?index=${i}" style="color:red;font-size:11px;" onclick="return confirm('Remove photo ${i+1}?')">Remove</a>
     </div>
   `).join('');
+
+  const storageBadge = DATA_DIR === '/data'
+    ? '<span style="background:#d4edda;color:#155724;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:bold;">💾 Persistent storage ON</span>'
+    : '<span style="background:#f8d7da;color:#721c24;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:bold;">⚠️ Temp storage</span>';
 
   res.send(`
     <!DOCTYPE html>
@@ -222,7 +279,7 @@ app.get('/', (req, res) => {
         .card { background: white; border-radius: 12px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
         .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .stat-box { background: #f8f9fa; border-radius: 8px; padding: 12px; text-align: center; }
-        .stat-num { font-size: 28px; font-weight: bold; color: #0f3460; }
+        .stat-num { font-size: 26px; font-weight: bold; color: #0f3460; }
         .stat-label { font-size: 11px; color: #666; margin-top: 3px; }
         input, textarea, select { width: 100%; padding: 8px 10px; margin: 4px 0 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; }
         .btn { display: inline-block; padding: 10px 18px; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; text-decoration: none; margin: 4px 2px; }
@@ -233,25 +290,121 @@ app.get('/', (req, res) => {
         .btn-purple { background: #6f42c1; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
         tr:nth-child(even) { background: #f8f9fa; }
-        .badge { display: inline-block; padding: 3px 8px; border-radius: 20px; font-size: 11px; font-weight: bold; }
-        .badge-green { background: #d4edda; color: #155724; }
-        .badge-red { background: #f8d7da; color: #721c24; }
         label { font-size: 12px; font-weight: bold; color: #555; display: block; margin-top: 6px; }
         .hint { font-size: 11px; color: #888; margin-top: -6px; margin-bottom: 6px; }
+        .funnel { background: linear-gradient(to right, #007bff, #6f42c1); color: white; padding: 12px; border-radius: 8px; margin-top: 10px; font-size: 13px; }
+        .funnel-step { display: inline-block; margin-right: 8px; }
+        .funnel-arrow { color: rgba(255,255,255,0.6); margin-right: 4px; }
+        .status-banner {
+          background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+          color: white;
+          padding: 18px 22px;
+          border-radius: 12px;
+          margin-bottom: 15px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 10px;
+          box-shadow: 0 4px 12px rgba(40, 167, 69, 0.25);
+        }
+        .status-left { display: flex; align-items: center; gap: 14px; }
+        .status-pulse {
+          width: 12px; height: 12px; border-radius: 50%;
+          background: white;
+          box-shadow: 0 0 0 0 rgba(255,255,255,0.8);
+          animation: pulse 1.6s infinite;
+        }
+        @keyframes pulse {
+          0% { box-shadow: 0 0 0 0 rgba(255,255,255,0.7); }
+          70% { box-shadow: 0 0 0 14px rgba(255,255,255,0); }
+          100% { box-shadow: 0 0 0 0 rgba(255,255,255,0); }
+        }
+        .status-title { font-size: 18px; font-weight: bold; }
+        .status-sub { font-size: 12px; opacity: 0.9; margin-top: 2px; }
+        .status-fans { text-align: right; }
+        .status-fans-num { font-size: 32px; font-weight: bold; line-height: 1; }
+        .status-fans-label { font-size: 11px; opacity: 0.9; text-transform: uppercase; letter-spacing: 0.5px; }
+        .growth-card {
+          background: #fff8e1;
+          border: 1px solid #ffe082;
+          border-radius: 8px;
+          padding: 12px;
+          margin-top: 10px;
+          font-size: 13px;
+        }
+        .growth-card strong { color: #f57c00; }
       </style>
     </head>
     <body>
-      <h1>🤖 Bot Dashboard</h1>
+
+      <h1 style="margin-bottom:10px;">🤖 Bot Dashboard</h1>
+
+      <!-- BIG STATUS BANNER -->
+      <div class="status-banner">
+        <div class="status-left">
+          <div class="status-pulse"></div>
+          <div>
+            <div class="status-title">✅ Bot is running!</div>
+            <div class="status-sub">Uptime: ${uptimeText()} · ${storageBadge}</div>
+          </div>
+        </div>
+        <div class="status-fans">
+          <div class="status-fans-num">${fans.length.toLocaleString()}</div>
+          <div class="status-fans-label">Total fans saved</div>
+        </div>
+      </div>
 
       <div class="grid">
 
         <!-- STATS -->
         <div class="card">
           <h2>📊 Stats</h2>
-          <div class="stat-grid">
+
+          <div class="funnel">
+            <strong>📈 Funnel</strong><br>
+            <span class="funnel-step">👥 ${fans.length}</span>
+            <span class="funnel-arrow">→</span>
+            <span class="funnel-step">✉️ ${uniqueDelivered} (${deliveryRate}%)</span>
+            <span class="funnel-arrow">→</span>
+            <span class="funnel-step">👁️ ${uniqueReaders} (${openRate}%)</span>
+            <span class="funnel-arrow">→</span>
+            <span class="funnel-step">🖱️ ${totalClicks} (${clickRate}%)</span>
+          </div>
+
+          ${baseline > 0 ? `
+          <div class="growth-card">
+            <strong>📈 Growth since baseline:</strong><br>
+            Started with: <strong>${baseline.toLocaleString()}</strong> fans<br>
+            Gained since: <strong style="color:#28a745">+${growth.toLocaleString()}</strong> new fans (${growthPct}% growth)<br>
+            Current total: <strong>${fans.length.toLocaleString()}</strong>
+          </div>
+          ` : ''}
+
+          <div class="stat-grid" style="margin-top:12px;">
             <div class="stat-box">
               <div class="stat-num">${fans.length}</div>
-              <div class="stat-label">Total Fans</div>
+              <div class="stat-label">Total Fans 👥</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num" style="color:#007bff">${uniqueDelivered}</div>
+              <div class="stat-label">Delivered ✉️</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num" style="color:#6f42c1">${uniqueReaders}</div>
+              <div class="stat-label">Seen 👁️</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num">${opensToday}</div>
+              <div class="stat-label">Opens Today</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num">${totalOpens}</div>
+              <div class="stat-label">Total Opens 📖</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num">${totalDeliveries}</div>
+              <div class="stat-label">Total Deliveries</div>
             </div>
             <div class="stat-box">
               <div class="stat-num">${clicksToday}</div>
@@ -259,11 +412,15 @@ app.get('/', (req, res) => {
             </div>
             <div class="stat-box">
               <div class="stat-num">${totalClicks}</div>
-              <div class="stat-label">Total Clicks</div>
+              <div class="stat-label">Total Clicks 🖱️</div>
             </div>
             <div class="stat-box">
               <div class="stat-num">${fansThisWeek}</div>
               <div class="stat-label">New This Week</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num" style="color:#fd7e14">${openRate}%</div>
+              <div class="stat-label">Open Rate</div>
             </div>
             <div class="stat-box">
               <div class="stat-num" style="color:#28a745">${stats.messagesSent || 0}</div>
@@ -293,7 +450,7 @@ app.get('/', (req, res) => {
             <input name="subtitle" value="${settings.subtitle}" />
             <label>Button text:</label>
             <input name="buttonText" value="${settings.buttonText || 'WHATSAPP 📞'}" maxlength="20" />
-            <div class="hint">Max 20 characters. Emojis OK. Examples: "Call Me 📞", "💕 Chat Now", "Text Me 💋"</div>
+            <div class="hint">Max 20 characters. Examples: "Call Me 📞", "💕 Chat Now", "Text Me 💋"</div>
             <label>WhatsApp / Redirect URL:</label>
             <input name="whatsapp" value="${settings.whatsapp}" />
             <button type="submit" class="btn btn-blue">💾 Save Settings</button>
@@ -365,10 +522,33 @@ app.get('/', (req, res) => {
         <!-- FAN MANAGER -->
         <div class="card">
           <h2>📋 Fan Manager</h2>
-          <p style="font-size:13px;margin-bottom:15px;">Total fans: <strong>${fans.length}</strong></p>
+          <p style="font-size:13px;margin-bottom:8px;">Total fans: <strong>${fans.length}</strong></p>
+          ${baseline > 0 ? `<p style="font-size:13px;margin-bottom:15px;color:#28a745;">📈 +${growth.toLocaleString()} new since baseline of ${baseline.toLocaleString()}</p>` : '<p style="font-size:13px;margin-bottom:15px;color:#888;">No baseline set yet</p>'}
+
           <a href="/import-contacts" class="btn btn-blue">🔄 Import All Contacts</a>
           <a href="/export-fans" class="btn btn-green">📥 Export Fan List</a>
           <br/><br/>
+
+          <!-- BASELINE CONTROLS -->
+          <div style="background:#fff8e1;padding:12px;border-radius:8px;border:1px solid #ffe082;">
+            <strong style="font-size:13px;color:#f57c00;">📌 Baseline (track growth)</strong>
+            <p style="font-size:11px;color:#666;margin:4px 0 8px;">Current baseline: <strong>${baseline.toLocaleString()}</strong> fans</p>
+            <form action="/set-baseline" method="POST" style="display:inline;">
+              <input type="hidden" name="value" value="${fans.length}">
+              <button type="submit" class="btn btn-orange" onclick="return confirm('Set baseline to current total (${fans.length})?')">📌 Snapshot now</button>
+            </form>
+            <form action="/set-baseline" method="POST" style="display:inline;">
+              <input type="hidden" name="value" value="0">
+              <button type="submit" class="btn btn-red" onclick="return confirm('Reset baseline to 0?')">🔄 Reset</button>
+            </form>
+            <form action="/set-baseline" method="POST" style="margin-top:8px;">
+              <label style="font-size:11px;">Or set custom baseline number:</label>
+              <input name="value" type="number" placeholder="e.g. 200" style="width:120px;display:inline-block;">
+              <button type="submit" class="btn btn-blue">💾 Save</button>
+            </form>
+          </div>
+
+          <br/>
           <a href="/clear-fans" class="btn btn-red" onclick="return confirm('Are you sure? This deletes ALL ${fans.length} fans!')">🗑️ Clear All Fans</a>
           <br/><br/>
           <form action="/add-fan" method="POST">
@@ -404,8 +584,15 @@ app.post('/update-schedule', (req, res) => {
   settings.timezone = req.body.timezone;
   settings.broadcastEnabled = req.body.broadcastEnabled === 'true';
   saveSettings(settings);
-  startCron(); // restart cron with new schedule
+  startCron();
   res.redirect('/?schedule_saved=1');
+});
+
+app.post('/set-baseline', (req, res) => {
+  let settings = loadSettings();
+  settings.baselineFans = parseInt(req.body.value) || 0;
+  saveSettings(settings);
+  res.redirect('/');
 });
 
 app.post('/add-photo', (req, res) => {
@@ -491,7 +678,6 @@ app.post('/send-custom', (req, res) => {
   `);
 });
 
-// One-time scheduled broadcast
 let scheduledBroadcast = null;
 app.post('/schedule-once', (req, res) => {
   let scheduleTime = new Date(req.body.scheduleTime);
@@ -524,7 +710,7 @@ app.post('/schedule-once', (req, res) => {
 });
 
 // ============================================
-// TRACKING
+// TRACKING (button clicks)
 // ============================================
 app.get('/track', (req, res) => {
   let psid = req.query.psid || 'unknown';
@@ -551,10 +737,19 @@ app.get('/import-contacts', async (req, res) => {
     }
     let combined = [...new Set([...loadFans(), ...allPsids])];
     saveFans(combined);
+
+    // Auto-set baseline on first import if not set yet
+    let settings = loadSettings();
+    if (!settings.baselineFans || settings.baselineFans === 0) {
+      settings.baselineFans = combined.length;
+      saveSettings(settings);
+    }
+
     res.send(`
       <h2>✅ Import Complete!</h2>
       <p>Found: <strong>${allPsids.length}</strong> contacts</p>
       <p>Total saved: <strong>${combined.length}</strong> fans</p>
+      <p style="color:#28a745;">📌 Baseline auto-set to ${settings.baselineFans} (you can change this in Fan Manager)</p>
       <br/><a href="/" style="background:#28a745;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;">← Back to Dashboard</a>
     `);
   } catch (err) {
@@ -574,20 +769,35 @@ app.post('/webhook', (req, res) => {
   let body = req.body;
   if (body.object === 'page') {
     body.entry.forEach(entry => {
-      let event = entry.messaging[0];
-      let psid = event.sender.id;
-      const isNewFan = !isFanSaved(psid);
-      saveFan(psid);
+      (entry.messaging || []).forEach(event => {
+        let psid = event.sender?.id;
+        if (!psid) return;
 
-      if (event.postback?.payload === 'GET_STARTED') {
-        let s = loadSettings();
-        sendMessage(psid, `Hey gorgeous! 💕 So happy you're here!`);
-        setTimeout(() => sendCard(psid, s.title, s.subtitle, getTodaysPhoto(), s.whatsapp), 1000);
-      } else if (event.message && isNewFan) {
-        let s = loadSettings();
-        sendMessage(psid, `Hey beautiful! 💕 Message me on WhatsApp 👇`);
-        setTimeout(() => sendCard(psid, s.title, s.subtitle, getTodaysPhoto(), s.whatsapp), 1000);
-      }
+        if (event.read) {
+          trackRead(psid, event.read.watermark);
+          console.log('👁️ Read by:', psid);
+          return;
+        }
+
+        if (event.delivery) {
+          trackDelivery(psid, event.delivery.watermark);
+          console.log('✉️ Delivered to:', psid);
+          return;
+        }
+
+        const isNewFan = !isFanSaved(psid);
+        saveFan(psid);
+
+        if (event.postback?.payload === 'GET_STARTED') {
+          let s = loadSettings();
+          sendMessage(psid, `Hey gorgeous! 💕 So happy you're here!`);
+          setTimeout(() => sendCard(psid, s.title, s.subtitle, getTodaysPhoto(), s.whatsapp), 1000);
+        } else if (event.message && isNewFan) {
+          let s = loadSettings();
+          sendMessage(psid, `Hey beautiful! 💕 Message me on WhatsApp 👇`);
+          setTimeout(() => sendCard(psid, s.title, s.subtitle, getTodaysPhoto(), s.whatsapp), 1000);
+        }
+      });
     });
     res.status(200).send('EVENT_RECEIVED');
   } else res.sendStatus(404);
@@ -607,7 +817,6 @@ function startCron() {
   }
   let [hour, min] = (settings.broadcastTime || '07:30').split(':');
 
-  // Now actually uses the timezone from settings
   cronJob = cron.schedule(`${min} ${hour} * * *`, () => {
     console.log('🔔 Daily broadcast running...');
     let fans = loadFans();
