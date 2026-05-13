@@ -20,7 +20,12 @@ const PUBLIC_URL = process.env.RAILWAY_PUBLIC_DOMAIN
 // DATA FUNCTIONS
 // ============================================
 function loadSettings() {
-  try { return JSON.parse(fs.readFileSync('settings.json', 'utf8')); }
+  try {
+    let s = JSON.parse(fs.readFileSync('settings.json', 'utf8'));
+    // Make sure buttonText exists even on old saved settings
+    if (!s.buttonText) s.buttonText = "WHATSAPP 📞";
+    return s;
+  }
   catch {
     return {
       whatsapp: "https://wa.me/1234567890",
@@ -33,6 +38,7 @@ function loadSettings() {
       title: "Heyy darling 💕",
       subtitle: "I'm on WhatsApp... lets talk",
       message: "Hey gorgeous! 💕 Thinking of you...",
+      buttonText: "WHATSAPP 📞",
       broadcastTime: "07:30",
       timezone: "UTC",
       broadcastEnabled: true
@@ -138,6 +144,8 @@ function sendMessage(psid, text) {
 }
 
 function sendCard(psid, title, subtitle, photo, whatsapp) {
+  // Button text is now read from settings (editable in dashboard)
+  const buttonText = loadSettings().buttonText || "WHATSAPP 📞";
   // Tracking URL — auto-built from Railway's public domain
   const trackUrl = `${PUBLIC_URL}/track?psid=${psid}`;
   return fetch(`https://graph.facebook.com/v2.6/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
@@ -153,7 +161,7 @@ function sendCard(psid, title, subtitle, photo, whatsapp) {
             elements: [{
               title, subtitle,
               image_url: photo,
-              buttons: [{ type: "web_url", url: trackUrl, title: "WHATSAPP 📞" }]
+              buttons: [{ type: "web_url", url: trackUrl, title: buttonText }]
             }]
           }
         }
@@ -229,6 +237,7 @@ app.get('/', (req, res) => {
         .badge-green { background: #d4edda; color: #155724; }
         .badge-red { background: #f8d7da; color: #721c24; }
         label { font-size: 12px; font-weight: bold; color: #555; display: block; margin-top: 6px; }
+        .hint { font-size: 11px; color: #888; margin-top: -6px; margin-bottom: 6px; }
       </style>
     </head>
     <body>
@@ -282,6 +291,9 @@ app.get('/', (req, res) => {
             <input name="title" value="${settings.title}" />
             <label>Card subtitle:</label>
             <input name="subtitle" value="${settings.subtitle}" />
+            <label>Button text:</label>
+            <input name="buttonText" value="${settings.buttonText || 'WHATSAPP 📞'}" maxlength="20" />
+            <div class="hint">Max 20 characters. Emojis OK. Examples: "Call Me 📞", "💕 Chat Now", "Text Me 💋"</div>
             <label>WhatsApp / Redirect URL:</label>
             <input name="whatsapp" value="${settings.whatsapp}" />
             <button type="submit" class="btn btn-blue">💾 Save Settings</button>
@@ -380,6 +392,7 @@ app.post('/update-settings', (req, res) => {
   settings.message = req.body.message;
   settings.title = req.body.title;
   settings.subtitle = req.body.subtitle;
+  settings.buttonText = req.body.buttonText || "WHATSAPP 📞";
   settings.whatsapp = req.body.whatsapp;
   saveSettings(settings);
   res.redirect('/?saved=1');
