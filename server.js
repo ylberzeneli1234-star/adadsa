@@ -45,7 +45,7 @@ function getDefaults() {
     currentPhoto: process.env.DEFAULT_CURRENT_PHOTO || "https://i.imgur.com/2J3Jne9.png",
     broadcastTime: process.env.DEFAULT_BROADCAST_TIME || "07:30",
     timezone: process.env.DEFAULT_TIMEZONE || "UTC",
-    broadcastEnabled: true,
+    broadcastEnabled: process.env.DEFAULT_BROADCAST_ENABLED === 'false' ? false : true,
     baselineFans: parseInt(process.env.DEFAULT_BASELINE_FANS) || 0
   };
 }
@@ -453,9 +453,9 @@ app.get('/send-now', (req, res) => {
     setTimeout(() => {
       sendMessage(psid, today.text);
       setTimeout(() => sendCard(psid, s.title, today.subtitle, getTodaysPhoto(), s.whatsapp), 1500);
-    }, i * 18000);
+    }, i * 2000);
   });
-  res.send(`<h2>📣 Broadcast Started!</h2><p>Sending to <strong>${fans.length} fans</strong></p><br/><a href="/" style="background:#28a745;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;">← Back</a>`);
+  res.send(`<h2>📣 Broadcast Started!</h2><p>Sending to <strong>${fans.length} fans</strong></p><p>Rate: ~1,800/hour (2s spacing)</p><p>Estimated: <strong>${Math.ceil(fans.length / 1800)} hours</strong></p><br/><a href="/" style="background:#28a745;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;">← Back</a>`);
 });
 
 app.post('/send-custom', (req, res) => {
@@ -464,7 +464,7 @@ app.post('/send-custom', (req, res) => {
     setTimeout(() => {
       sendMessage(psid, msg);
       setTimeout(() => sendCard(psid, s.title, s.subtitle, photo, s.whatsapp), 1500);
-    }, i * 18000);
+    }, i * 2000);
   });
   res.send(`<h2>🚀 Sent!</h2><p>To <strong>${fans.length} fans</strong></p><br/><a href="/" style="background:#28a745;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;">← Back</a>`);
 });
@@ -480,7 +480,7 @@ app.post('/schedule-once', (req, res) => {
         setTimeout(() => {
           sendMessage(psid, msg);
           setTimeout(() => sendCard(psid, s.title, s.subtitle, getTodaysPhoto(), s.whatsapp), 1500);
-        }, i * 18000);
+        }, i * 2000);
       });
     }, delay);
     res.send(`<h2>📅 Scheduled!</h2><p>Will send at: <strong>${t.toLocaleString()}</strong></p><br/><a href="/">← Back</a>`);
@@ -545,7 +545,7 @@ function startCron() {
       setTimeout(() => {
         sendMessage(psid, today.text);
         setTimeout(() => sendCard(psid, s2.title, today.subtitle, getTodaysPhoto(), s2.whatsapp), 1500);
-      }, i * 18000);
+      }, i * 2000);
     });
   }, { timezone: s.timezone || 'UTC' });
   console.log(`✅ Cron set for ${hour}:${min} (${s.timezone || 'UTC'})`);
