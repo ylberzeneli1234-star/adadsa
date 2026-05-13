@@ -161,6 +161,10 @@ app.get('/', (req, res) => {
   let baseline = settings.baselineFans || 0;
   let growth = Math.max(fans.length - baseline, 0);
   let growthPct = baseline > 0 ? Math.round((growth / baseline) * 100) : 0;
+  // Organic fans = ones added via webhook (have timestamp). Imported = the rest.
+  let organicFans = (stats.fansAdded || []).length;
+  let importedFans = Math.max(fans.length - organicFans, 0);
+  let fansToday = (stats.fansAdded || []).filter(f => f.time.startsWith(todayStr)).length;
   let uniqueReaders = (stats.readers || []).length;
   let totalOpens = (stats.reads || []).length;
   let opensToday = (stats.reads || []).filter(r => r.time.startsWith(todayStr)).length;
@@ -324,11 +328,48 @@ label { font-size: 12px; font-weight: bold; color: #555; display: block; margin-
   </div>
   <div class="card">
     <h2>📋 Fan Manager</h2>
-    <p style="font-size:13px;margin-bottom:8px;">Total fans: <strong>${fans.length}</strong></p>
-    ${baseline > 0 ? `<p style="font-size:13px;margin-bottom:15px;color:#28a745;">📈 +${growth.toLocaleString()} new since baseline of ${baseline.toLocaleString()}</p>` : '<p style="font-size:13px;margin-bottom:15px;color:#888;">No baseline set yet</p>'}
+    <p style="font-size:13px;margin-bottom:8px;">Total fans: <strong>${fans.length.toLocaleString()}</strong></p>
+
+    <!-- OLD vs NEW BREAKDOWN -->
+    <div style="background:#e7f3ff;padding:12px;border-radius:8px;border:1px solid #b3d9ff;margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:bold;color:#0056b3;margin-bottom:6px;">👥 Fan breakdown</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;">
+        <div style="background:white;padding:8px;border-radius:6px;">
+          <div style="font-size:18px;font-weight:bold;color:#6c757d;">${importedFans.toLocaleString()}</div>
+          <div style="font-size:11px;color:#666;">📦 Imported (old)</div>
+        </div>
+        <div style="background:white;padding:8px;border-radius:6px;">
+          <div style="font-size:18px;font-weight:bold;color:#28a745;">${organicFans.toLocaleString()}</div>
+          <div style="font-size:11px;color:#666;">✨ New (organic)</div>
+        </div>
+        <div style="background:white;padding:8px;border-radius:6px;">
+          <div style="font-size:18px;font-weight:bold;color:#007bff;">${fansToday}</div>
+          <div style="font-size:11px;color:#666;">📅 Today</div>
+        </div>
+        <div style="background:white;padding:8px;border-radius:6px;">
+          <div style="font-size:18px;font-weight:bold;color:#6f42c1;">${fansThisWeek}</div>
+          <div style="font-size:11px;color:#666;">📆 This week</div>
+        </div>
+      </div>
+    </div>
+
+    ${baseline > 0 ? `<p style="font-size:13px;margin-bottom:15px;color:#28a745;">📈 +${growth.toLocaleString()} new since baseline of ${baseline.toLocaleString()}</p>` : ''}
+
     <a href="/import-contacts" class="btn btn-blue">🔄 Import All Contacts</a>
     <a href="/export-fans" class="btn btn-green">📥 Export Fan List</a>
     <br/><br/>
+
+    <!-- BULK IMPORT FROM TEXT -->
+    <div style="background:#e8f5e9;padding:12px;border-radius:8px;border:1px solid #a5d6a7;">
+      <strong style="font-size:13px;color:#2e7d32;">📋 Bulk Import (from backup)</strong>
+      <p style="font-size:11px;color:#666;margin:4px 0 8px;">Paste PSIDs here (one per line) to restore from your Export Fan List backup</p>
+      <form action="/bulk-add-fans" method="POST">
+        <textarea name="psids" rows="4" placeholder="1234567890123456&#10;9876543210987654&#10;..." style="font-family:monospace;font-size:11px;"></textarea>
+        <button type="submit" class="btn btn-green" onclick="return confirm('Add all PSIDs to the fan list?')">📥 Bulk Add Fans</button>
+      </form>
+    </div>
+    <br/>
+
     <div style="background:#fff8e1;padding:12px;border-radius:8px;border:1px solid #ffe082;">
       <strong style="font-size:13px;color:#f57c00;">📌 Baseline (track growth)</strong>
       <p style="font-size:11px;color:#666;margin:4px 0 8px;">Current baseline: <strong>${baseline.toLocaleString()}</strong> fans</p>
@@ -350,7 +391,7 @@ label { font-size: 12px; font-weight: bold; color: #555; display: block; margin-
     <a href="/clear-fans" class="btn btn-red" onclick="return confirm('Delete ALL ${fans.length} fans?')">🗑️ Clear All Fans</a>
     <br/><br/>
     <form action="/add-fan" method="POST">
-      <label>Add fan manually (PSID):</label><input name="psid" />
+      <label>Add fan manually (single PSID):</label><input name="psid" />
       <button type="submit" class="btn btn-green">➕ Add Fan</button>
     </form>
   </div>
@@ -383,7 +424,28 @@ app.get('/remove-photo', (req, res) => {
 });
 app.get('/clear-fans', (req, res) => { saveFans([]); res.redirect('/'); });
 app.post('/add-fan', (req, res) => { if (req.body.psid) saveFan(req.body.psid); res.redirect('/'); });
-app.get('/export-fans', (req, res) => { res.setHeader('Content-Type', 'text/plain'); res.send(loadFans().join('\n')); });
+
+app.post('/bulk-add-fans', (req, res) => {
+  const text = req.body.psids || '';
+  // Parse PSIDs — split by newlines, commas, spaces; filter to numbers only
+  const psids = text.split(/[\s,]+/).map(s => s.trim()).filter(s => /^\d{6,}$/.test(s));
+  const before = loadFans().length;
+  const combined = [...new Set([...loadFans(), ...psids])];
+  saveFans(combined);
+  const added = combined.length - before;
+  res.send(`<h2>✅ Bulk Import Done!</h2>
+    <p>PSIDs found in input: <strong>${psids.length}</strong></p>
+    <p>New fans added: <strong>${added}</strong></p>
+    <p>Already existed (duplicates skipped): <strong>${psids.length - added}</strong></p>
+    <p>Total fans now: <strong>${combined.length}</strong></p>
+    <br/><a href="/" style="background:#28a745;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;">← Back to Dashboard</a>`);
+});
+app.get('/export-fans', (req, res) => {
+  const filename = `fans-backup-${new Date().toISOString().split('T')[0]}.txt`;
+  res.setHeader('Content-Type', 'text/plain');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(loadFans().join('\n'));
+});
 
 app.get('/send-now', (req, res) => {
   let fans = loadFans(); let s = loadSettings(); let today = getTodaysMessage();
