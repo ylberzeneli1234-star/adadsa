@@ -359,11 +359,24 @@ label { font-size: 12px; font-weight: bold; color: #555; display: block; margin-
     <a href="/export-fans" class="btn btn-green">📥 Export Fan List</a>
     <br/><br/>
 
-    <!-- BULK IMPORT FROM TEXT -->
+    <!-- BULK IMPORT FROM TEXT OR FILE -->
     <div style="background:#e8f5e9;padding:12px;border-radius:8px;border:1px solid #a5d6a7;">
       <strong style="font-size:13px;color:#2e7d32;">📋 Bulk Import (from backup)</strong>
-      <p style="font-size:11px;color:#666;margin:4px 0 8px;">Paste PSIDs here (one per line) to restore from your Export Fan List backup</p>
+      <p style="font-size:11px;color:#666;margin:4px 0 8px;">Upload your fans-backup.txt OR paste PSIDs below</p>
       <form action="/bulk-add-fans" method="POST">
+        <label style="font-size:11px;">📁 Upload .txt file:</label>
+        <input type="file" accept=".txt,text/plain" onchange="
+          var f = this.files[0]; if (!f) return;
+          var r = new FileReader();
+          r.onload = function(e) {
+            document.querySelector('textarea[name=psids]').value = e.target.result;
+            var count = (e.target.result.match(/\\d{6,}/g) || []).length;
+            document.getElementById('bulkFileStatus').textContent = '✅ Loaded ' + count + ' PSIDs from ' + f.name;
+          };
+          r.readAsText(f);
+        " style="font-size:12px;" />
+        <div id="bulkFileStatus" style="font-size:11px;color:#28a745;margin:4px 0;"></div>
+        <label style="font-size:11px;margin-top:8px;">📝 Or paste PSIDs (one per line):</label>
         <textarea name="psids" rows="4" placeholder="1234567890123456&#10;9876543210987654&#10;..." style="font-family:monospace;font-size:11px;"></textarea>
         <button type="submit" class="btn btn-green" onclick="return confirm('Add all PSIDs to the fan list?')">📥 Bulk Add Fans</button>
       </form>
