@@ -99,6 +99,7 @@ function addPage(data) {
     timezone: data.timezone || d.timezone,
     broadcastEnabled: data.broadcastEnabled !== undefined ? data.broadcastEnabled : d.broadcastEnabled,
     spacingSeconds: data.spacingSeconds || d.spacingSeconds,
+    cleanupThreshold: data.cleanupThreshold !== undefined ? data.cleanupThreshold : 1,
     baselineFans: data.baselineFans || 0,
     createdAt: new Date().toISOString()
   };
@@ -132,6 +133,60 @@ function saveFan(pageId, psid) {
     saveFansList(pageId, fans);
     trackFanAdded(pageId, psid);
     console.log(`[${pageId}] New fan: ${psid} | Total: ${fans.length}`);
+  }
+}
+
+// Track a send failure for a fan, increment their consecutive-failure counter.
+// Only remove the fan if their counter reaches the page's cleanupThreshold.
+// This protects against FB's "outside 24h window" false negatives — some fans
+// (admins, testers, very active users) can receive messages even when FB returns
+// error code 10. Requiring N consecutive failures avoids removing those fans.
+function trackFailureForFan(pageId, psid, reason) {
+  const page = getPage(pageId);
+  const threshold = (page && page.cleanupThreshold !== undefined) ? page.cleanupThreshold : 1;
+  if (threshold === 0) return; // auto-cleanup disabled
+  const s = loadStats(pageId);
+  s.fanFailures = s.fanFailures || {};
+  s.fanFailures[psid] = (s.fanFailures[psid] || 0) + 1;
+  const count = s.fanFailures[psid];
+  if (count >= threshold) {
+    // Remove the fan
+    const fans = loadFans(pageId);
+    const filtered = fans.filter(p => p !== psid);
+    if (filtered.length !== fans.length) {
+      saveFansList(pageId, filtered);
+      s.removedFans = s.removedFans || [];
+      s.removedFans.push({ psid, reason: `${count} consecutive failures: ${reason || 'unreachable'}`, time: new Date().toISOString() });
+      delete s.fanFailures[psid]; // clear counter
+      console.log(`[${pageId}] Auto-removed fan ${psid} after ${count} failures (${reason}) | Remaining: ${filtered.length}`);
+    }
+  } else {
+    console.log(`[${pageId}] Fan ${psid} failure ${count}/${threshold} (${reason}) — not removed yet`);
+  }
+  saveStats(pageId, s);
+}
+
+// Reset a fan's failure counter when they successfully receive a message.
+// This is critical: a single success "saves" them from being removed.
+function clearFailuresForFan(pageId, psid) {
+  const s = loadStats(pageId);
+  if (s.fanFailures && s.fanFailures[psid]) {
+    delete s.fanFailures[psid];
+    saveStats(pageId, s);
+  }
+}
+
+// Legacy helper kept for compatibility (manual remove from dashboard)
+function removeFan(pageId, psid, reason) {
+  const fans = loadFans(pageId);
+  const filtered = fans.filter(p => p !== psid);
+  if (filtered.length !== fans.length) {
+    saveFansList(pageId, filtered);
+    const s = loadStats(pageId);
+    s.removedFans = s.removedFans || [];
+    s.removedFans.push({ psid, reason: reason || 'manual', time: new Date().toISOString() });
+    saveStats(pageId, s);
+    console.log(`[${pageId}] Removed fan ${psid} (${reason}) | Remaining: ${filtered.length}`);
   }
 }
 
@@ -309,10 +364,34 @@ function sendCard(page, psid, opts = {}) {
       }
     })
   }).then(r => r.json()).then(data => {
-    if (data.error) { trackMessage(page.pageId, false); console.log(`[${page.label}] Card failed:`, data.error.message); }
-    else { trackMessage(page.pageId, true); }
+    if (data.error) {
+      trackMessage(page.pageId, false);
+      const code = data.error.code;
+      const msg = data.error.message || '';
+      console.log(`[${page.label}] Card failed (psid ${psid}, code ${code}):`, msg);
+      // Track failure: only auto-remove fan after N consecutive failures
+      // (default 3). Protects against FB's "outside 24h window" false negatives.
+      // Match by error code primarily; regex on text as a backup in case FB rewords.
+      const unreachable =
+        code === 10 || code === 100 || code === 551 ||
+        /outside [\w\s]*allowed window/i.test(msg) ||
+        /no matching user/i.test(msg) ||
+        /cannot receive messages/i.test(msg) ||
+        /policy[- ]?enforcement/i.test(msg);
+      if (unreachable && !opts.skipRemoval) {
+        trackFailureForFan(page.pageId, psid, `FB error ${code}: ${msg.slice(0, 60)}`);
+      }
+    } else {
+      trackMessage(page.pageId, true);
+      // Successful send — reset failure counter for this fan
+      clearFailuresForFan(page.pageId, psid);
+    }
     return data;
-  }).catch(err => { trackMessage(page.pageId, false); console.error(`[${page.label}] Card error:`, err.message); return { error: { message: err.message } }; });
+  }).catch(err => {
+    trackMessage(page.pageId, false);
+    console.error(`[${page.label}] Card error (psid ${psid}):`, err.message);
+    return { error: { message: err.message } };
+  });
 }
 
 function broadcastToPage(page, opts = {}) {
@@ -363,13 +442,22 @@ app.post('/webhook', (req, res) => {
 });
 
 // Click tracker — routes by pageId to the right WhatsApp URL
+// Redirect-first design: fan gets redirected immediately, tracking happens after.
+// If tracking fails for any reason, fan experience is unaffected.
 app.get('/track', (req, res) => {
   const pageId = req.query.pageId;
   const psid = req.query.psid || 'unknown';
   const page = getPage(pageId);
-  if (!page) return res.redirect(getDefaults().whatsapp);
-  trackClick(pageId, psid);
-  res.redirect(page.whatsapp);
+  const dest = page ? page.whatsapp : getDefaults().whatsapp;
+  // Send the redirect FIRST so the fan never waits on disk I/O or tracking errors
+  res.redirect(dest);
+  // Track in background (fire-and-forget), errors logged but don't block fan
+  if (page) {
+    setImmediate(() => {
+      try { trackClick(pageId, psid); }
+      catch (e) { console.error(`[${page.label}] Click tracking failed (fan was redirected ok):`, e.message); }
+    });
+  }
 });
 
 // ============================================
@@ -545,7 +633,18 @@ function renderAllPagesView(pages, req) {
       <h2>📋 Pages</h2>
       ${pages.length === 0
         ? '<p style="color:#6b7280;">No pages yet. Add one below to get started 👇</p>'
-        : `<table>
+        : `
+          <div style="margin-bottom:12px;padding:10px;background:#f7f8fc;border-radius:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span style="font-size:13px;font-weight:600;color:#4a5568;">Bulk actions:</span>
+            <form action="/pause-all" method="POST" style="display:inline;margin:0;">
+              <button type="submit" class="qbtn qbtn-pause" onclick="return confirm('Pause daily auto-broadcast for ALL ${pages.length} pages?')">⏸️ Pause All Pages</button>
+            </form>
+            <form action="/resume-all" method="POST" style="display:inline;margin:0;">
+              <button type="submit" class="qbtn qbtn-resume" onclick="return confirm('Resume daily auto-broadcast for ALL ${pages.length} pages?')">▶️ Resume All Pages</button>
+            </form>
+            <span style="font-size:11px;color:#6b7280;margin-left:8px;">— useful before deploying code changes</span>
+          </div>
+          <table>
             <thead><tr><th>Page</th><th>Fans</th><th>Clicks (today / total)</th><th>Messages</th><th>Status</th><th>Quick actions</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>`
@@ -555,6 +654,22 @@ function renderAllPagesView(pages, req) {
     <div class="card">
       <h2>➕ Add New Page</h2>
       <p style="color:#6b7280;font-size:13px;">Paste the Page ID and Page Access Token from Facebook Developer. Optional fields below override the defaults for this specific page.</p>
+
+      <div style="background:#eef6ff;border:1px solid #b5d4f4;border-radius:8px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-size:12px;font-weight:600;color:#0c447c;margin-bottom:8px;">📋 Paste these into Facebook Developer when setting up the webhook:</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+          <span style="font-size:11px;color:#0c447c;font-weight:600;min-width:100px;">Callback URL:</span>
+          <input type="text" id="webhook-url" value="${esc(PUBLIC_URL)}/webhook" readonly onclick="this.select();" style="flex:1;min-width:240px;padding:6px 10px;font-family:monospace;font-size:12px;background:#fff;border:1px solid #b5d4f4;border-radius:5px;color:#0c447c;"/>
+          <button type="button" onclick="(function(b){var i=document.getElementById('webhook-url');i.select();document.execCommand('copy');var t=b.innerText;b.innerText='✓ Copied';setTimeout(function(){b.innerText=t;},1200);})(this)" style="padding:6px 12px;background:#3a8dde;color:#fff;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;">📋 Copy</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:11px;color:#0c447c;font-weight:600;min-width:100px;">Verify Token:</span>
+          <input type="text" id="verify-token" value="${esc(VERIFY_TOKEN)}" readonly onclick="this.select();" style="flex:1;min-width:240px;padding:6px 10px;font-family:monospace;font-size:12px;background:#fff;border:1px solid #b5d4f4;border-radius:5px;color:#0c447c;"/>
+          <button type="button" onclick="(function(b){var i=document.getElementById('verify-token');i.select();document.execCommand('copy');var t=b.innerText;b.innerText='✓ Copied';setTimeout(function(){b.innerText=t;},1200);})(this)" style="padding:6px 12px;background:#3a8dde;color:#fff;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;">📋 Copy</button>
+        </div>
+        <div style="font-size:11px;color:#4a5568;margin-top:8px;">Subscribe to: <code style="background:#fff;padding:1px 5px;border-radius:3px;">messages</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">messaging_postbacks</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">messaging_optins</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">message_reads</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">message_deliveries</code></div>
+      </div>
+
       <form action="/add-page" method="POST">
         <div class="row">
           <div>
@@ -655,6 +770,9 @@ function renderPageView(page, req) {
   const fansToday = fansAdded.filter(f => f.time.startsWith(todayStr)).length;
   const fansThisWeek = fansAdded.filter(f => f.time >= weekAgo).length;
   const newOrganic = fansAdded.length;
+  const removedFans = stats.removedFans || [];
+  const removedToday = removedFans.filter(r => r.time.startsWith(todayStr)).length;
+  const removedTotal = removedFans.length;
   const imported = Math.max(0, fans.length - newOrganic);
   const baseline = page.baselineFans || 0;
   const growth = baseline > 0 ? fans.length - baseline : 0;
@@ -685,19 +803,41 @@ function renderPageView(page, req) {
   return `<div class="container">
     ${renderAlerts(req)}
 
+    <div class="card" style="padding:12px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:200px;">
+        <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Page Status</div>
+        <div style="font-size:16px;font-weight:700;color:#1a1d2e;margin-top:2px;">
+          ${page.broadcastEnabled
+            ? '<span style="color:#28a745;">🟢 Active</span> — daily auto-broadcast ON'
+            : '<span style="color:#f59e0b;">⏸️ Paused</span> — daily auto-broadcast OFF'}
+        </div>
+      </div>
+      <form action="/toggle-page" method="POST" style="margin:0;">
+        <input type="hidden" name="pageId" value="${esc(page.pageId)}"/>
+        <input type="hidden" name="returnTo" value="page"/>
+        ${page.broadcastEnabled
+          ? '<button type="submit" class="qbtn qbtn-pause" style="padding:8px 14px;font-size:13px;">⏸️ Pause Daily Broadcast</button>'
+          : '<button type="submit" class="qbtn qbtn-resume" style="padding:8px 14px;font-size:13px;">▶️ Resume Daily Broadcast</button>'
+        }
+      </form>
+    </div>
+
     <div class="card">
       <h2>📊 ${esc(page.label)} — Stats</h2>
       <div class="grid">
-        <div class="stat"><div class="v">${fans.length}</div><div class="l">Total Fans</div></div>
+        <div class="stat"><div class="v">${fans.length}</div><div class="l">Active Fans</div></div>
         <div class="stat"><div class="v">${imported}</div><div class="l">Imported (old)</div></div>
         <div class="stat"><div class="v">${newOrganic}</div><div class="l">New (organic)</div></div>
         <div class="stat"><div class="v">${fansToday}</div><div class="l">New Today</div></div>
         <div class="stat"><div class="v">${fansThisWeek}</div><div class="l">New This Week</div></div>
-        <div class="stat"><div class="v">${growth >= 0 ? '+' : ''}${growth}</div><div class="l">Growth (vs baseline ${baseline})</div></div>
+        <div class="stat"><div class="v">${growth >= 0 ? '+' : ''}${growth}</div><div class="l">Growth (baseline ${baseline})</div></div>
+      </div>
+      <div style="background:#eef6ff;border:1px solid #b5d4f4;border-radius:8px;padding:10px 14px;margin-top:12px;font-size:12px;color:#0c447c;">
+        🧹 <strong>Auto-cleanup ${page.cleanupThreshold === 0 ? '<span style="color:#dc3545;">DISABLED</span>' : `threshold = <strong>${page.cleanupThreshold === undefined ? 1 : page.cleanupThreshold}</strong>`}:</strong> ${removedTotal} fan${removedTotal === 1 ? '' : 's'} removed (${removedToday} today). ${(page.cleanupThreshold === undefined || page.cleanupThreshold === 1) ? 'Fan removed on FIRST failed send.' : `Fan removed after ${page.cleanupThreshold} consecutive failed sends.`} Auto-re-added if they message your page back. Change threshold in Schedule below.
       </div>
       <h3>📨 Message Funnel</h3>
       <div class="funnel">
-        <div class="step"><div class="v">${fans.length}</div><div class="l">Fans</div></div>
+        <div class="step"><div class="v">${fans.length}</div><div class="l">Active Fans</div></div>
         <div class="step"><div class="v">${delivered}</div><div class="l">Delivered</div><div class="pct">${pct(delivered, fans.length)}%</div></div>
         <div class="step"><div class="v">${seen}</div><div class="l">Seen</div><div class="pct">${pct(seen, delivered)}%</div></div>
         <div class="step"><div class="v">${totalClicks}</div><div class="l">Total Clicks</div><div class="pct">${pct(totalClicks, seen)}%</div></div>
@@ -706,6 +846,7 @@ function renderPageView(page, req) {
       <div class="grid" style="margin-top:14px;">
         <div class="stat"><div class="v">${sent}</div><div class="l">Sent ✅ (all-time)</div></div>
         <div class="stat"><div class="v">${failed}</div><div class="l">Failed ❌ (all-time)</div></div>
+        <div class="stat" style="border-left-color:#3a8dde;"><div class="v">${removedTotal}</div><div class="l">🧹 Auto-Removed</div></div>
         <div class="stat"><div class="v">${openRate}%</div><div class="l">Open Rate</div></div>
         <div class="stat"><div class="v">${page.broadcastEnabled ? 'ON' : 'OFF'}</div><div class="l">Daily Broadcast</div></div>
       </div>
@@ -807,6 +948,21 @@ function renderPageView(page, req) {
               <option value="false" ${!page.broadcastEnabled ? 'selected' : ''}>⏸️ Paused</option>
             </select>
           </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>🧹 Auto-Cleanup Threshold</label>
+            <select name="cleanupThreshold">
+              <option value="0" ${page.cleanupThreshold === 0 ? 'selected' : ''}>0 — Disabled (never remove fans)</option>
+              <option value="1" ${(page.cleanupThreshold === undefined || page.cleanupThreshold === 1) ? 'selected' : ''}>1 — Remove on 1st failure (default, fastest cleanup)</option>
+              <option value="2" ${page.cleanupThreshold === 2 ? 'selected' : ''}>2 — Remove after 2 consecutive failures</option>
+              <option value="3" ${page.cleanupThreshold === 3 ? 'selected' : ''}>3 — Safer (remove after 3 in a row)</option>
+              <option value="5" ${page.cleanupThreshold === 5 ? 'selected' : ''}>5 — Very safe (remove after 5 in a row)</option>
+              <option value="10" ${page.cleanupThreshold === 10 ? 'selected' : ''}>10 — Almost never remove</option>
+            </select>
+            <div class="helper">Default 1 = aggressive cleanup, single fail = removed. They get re-added if they message back. Any success resets the counter.</div>
+          </div>
+          <div></div>
         </div>
         <button type="submit" class="btn btn-green">💾 Save Schedule</button>
       </form>
@@ -965,6 +1121,24 @@ app.post('/toggle-page', (req, res) => {
   const page = getPage(pageId);
   if (!page) return res.redirect('/?error=Unknown+page');
   updatePage(pageId, { broadcastEnabled: !page.broadcastEnabled });
+  res.redirect(req.body.returnTo === 'page' ? `/?page=${encodeURIComponent(pageId)}&saved=1` : '/?saved=1');
+});
+
+// Bulk: pause daily auto-broadcast on ALL pages
+app.post('/pause-all', (req, res) => {
+  const pages = loadPages();
+  pages.forEach(p => {
+    if (p.broadcastEnabled) updatePage(p.pageId, { broadcastEnabled: false });
+  });
+  res.redirect('/?saved=1');
+});
+
+// Bulk: resume daily auto-broadcast on ALL pages
+app.post('/resume-all', (req, res) => {
+  const pages = loadPages();
+  pages.forEach(p => {
+    if (!p.broadcastEnabled) updatePage(p.pageId, { broadcastEnabled: true });
+  });
   res.redirect('/?saved=1');
 });
 
@@ -988,11 +1162,13 @@ app.post('/update-settings', (req, res) => {
 app.post('/update-schedule', (req, res) => {
   const pageId = req.query.page;
   if (!getPage(pageId)) return res.redirect('/?error=Unknown+page');
+  const threshold = req.body.cleanupThreshold !== undefined ? parseInt(req.body.cleanupThreshold) : 1;
   updatePage(pageId, {
     broadcastTime: req.body.broadcastTime,
     timezone: req.body.timezone,
-    spacingSeconds: parseInt(req.body.spacingSeconds) || 18,
-    broadcastEnabled: req.body.broadcastEnabled === 'true'
+    spacingSeconds: parseInt(req.body.spacingSeconds) || 10,
+    broadcastEnabled: req.body.broadcastEnabled === 'true',
+    cleanupThreshold: isNaN(threshold) ? 1 : threshold
   });
   res.redirect(`/?page=${encodeURIComponent(pageId)}&schedule_saved=1`);
 });
@@ -1139,7 +1315,7 @@ app.post('/test-send', async (req, res) => {
       <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
     </div></div></body></html>`);
   }
-  const result = await sendCard(page, psid);
+  const result = await sendCard(page, psid, { skipRemoval: true });
   if (result && result.error) {
     const errCode = result.error.code || '?';
     const errMsg = result.error.message || 'Unknown error';
