@@ -892,6 +892,31 @@ function renderPageView(page, req) {
     </div>
 
     <div class="card">
+      <h2>🔑 Page Settings (Token & Label)</h2>
+      <details>
+        <summary style="cursor:pointer;color:#3a8dde;font-size:13px;font-weight:600;padding:4px 0;">Click to edit token or rename this page</summary>
+        <form action="/edit-page?page=${esc(page.pageId)}" method="POST" style="margin-top:10px;">
+          <div class="row">
+            <div>
+              <label>Page Label / Nickname</label>
+              <input name="label" value="${esc(page.label)}" required/>
+              <div class="helper">Friendly name shown in dashboard (e.g. "Mature", "Friend Requests").</div>
+            </div>
+            <div>
+              <label>Page ID (read-only)</label>
+              <input value="${esc(page.pageId)}" readonly style="background:#f0f0f0;cursor:not-allowed;font-family:monospace;"/>
+              <div class="helper">Cannot be changed. Remove + re-add the page to use a different FB page.</div>
+            </div>
+          </div>
+          <label>Page Access Token</label>
+          <input name="accessToken" value="${esc(page.accessToken)}" required style="font-family:monospace;font-size:11px;"/>
+          <div class="helper">Long string starting with "EAA...". Regenerate in FB Developer if FB returns code 190 (token / permission errors). Make sure to grant: <code>pages_messaging</code>, <code>pages_show_list</code>, <code>pages_read_engagement</code>, <code>pages_manage_metadata</code>.</div>
+          <button type="submit" class="btn btn-green" onclick="return confirm('Update page settings? All stats, fans, and history will be preserved.')">💾 Save Page Settings</button>
+        </form>
+      </details>
+    </div>
+
+    <div class="card">
       <h2>✏️ Card / Message Editor</h2>
       <form action="/update-settings?page=${esc(page.pageId)}" method="POST">
         <div class="row">
@@ -1156,6 +1181,25 @@ app.post('/update-settings', (req, res) => {
     currentPhoto: req.body.currentPhoto || undefined,
     label: req.body.label || undefined
   });
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// Edit page settings (token, label). Preserves all fans, stats, and broadcast history.
+// Used to fix code 190 (permission) errors without losing data.
+app.post('/edit-page', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const newLabel = (req.body.label || '').trim();
+  const newToken = (req.body.accessToken || '').trim();
+  if (!newLabel) return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=Label+cannot+be+empty`);
+  if (!newToken) return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=Token+cannot+be+empty`);
+  if (newToken.length < 50) return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=Token+looks+too+short+%E2%80%94+should+start+with+EAA...`);
+  updatePage(pageId, {
+    label: newLabel,
+    accessToken: newToken
+  });
+  console.log(`[${pageId}] Page settings updated — label: "${newLabel}", token: ${newToken.slice(0, 12)}...${newToken.slice(-4)}`);
   res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
 });
 
