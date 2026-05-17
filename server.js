@@ -1,4 +1,4 @@
-// 1============================================
+// ============================================
 // messagebot — multi-tenant Facebook Messenger bot
 // One Railway service, many pages, one webhook URL
 // ============================================
