@@ -308,6 +308,11 @@ function loadStats(pageId) {
   }
 }
 function saveStats(pageId, s) { fs.writeFileSync(statsFile(pageId), JSON.stringify(s)); }
+// Reset all stats (clicks, sent, failed, reads, deliveries, daily history) to zero.
+// Does NOT touch the fan list (fans-{pageId}.json) or baselineFans.
+function resetStats(pageId) {
+  saveStats(pageId, { clicks: [], messagesSent: 0, messagesFailed: 0, fansAdded: [], reads: [], readers: [], deliveries: [], delivered: [], dailyMessages: {} });
+}
 function trackClick(pageId, psid) {
   const s = loadStats(pageId);
   s.clicks = s.clicks || [];
@@ -916,6 +921,9 @@ function renderAllPagesView(pages, req) {
             <form action="/randomize-all" method="POST" style="display:inline;margin:0;">
               <button type="submit" class="qbtn" style="background:#8b5cf6;" onclick="return confirm('Randomize photo + redirect URL for ALL ${pages.length} pages?\\n\\nEach page gets a fresh random combo from the shared library, different from its previous pick.')">🎲 Randomize ALL Pages</button>
             </form>
+            <form action="/reset-stats-all" method="POST" style="display:inline;margin:0;">
+              <button type="submit" class="qbtn" style="background:#dc2626;" onclick="return confirm('Reset ALL stats to 0 on all ${pages.length} pages?\\n\\nThis clears clicks, messages sent/failed, and daily history.\\n\\n✅ Fan counts are KEPT.\\n❌ Stats history is permanently erased.')">🗑️ Reset All Stats (keep fans)</button>
+            </form>
             <span style="font-size:11px;color:#6b7280;margin-left:8px;display:block;width:100%;">— useful before deploying code changes</span>
           </div>
           <table>
@@ -1359,6 +1367,10 @@ function renderPageView(page, req) {
         <button type="submit" class="btn btn-orange">📌 Set Baseline</button>
       </form>
       <a href="/clear-fans?page=${esc(page.pageId)}" class="btn btn-red" onclick="return confirm('CLEAR all ${fans.length} fans for this page? Export first!')">🗑️ Clear All Fans</a>
+      <form action="/reset-stats?page=${esc(page.pageId)}" method="POST" style="margin-top:10px;">
+        <button type="submit" class="btn" style="background:#dc2626;color:#fff;" onclick="return confirm('Reset stats to 0 for ${esc(page.label)}?\\n\\nClears clicks, messages sent/failed, and daily history.\\n\\n✅ Fans KEPT (${fans.length} fans stay).\\n❌ Stats history erased.')">📊 Reset Stats (keep fans)</button>
+        <div class="helper" style="margin-top:6px;">Zeroes clicks + messages + daily history. Fan count stays at ${fans.length}.</div>
+      </form>
     </div>
 
     <div class="card danger-zone">
@@ -1674,6 +1686,26 @@ app.post('/randomize-all', (req, res) => {
   });
   console.log(`🎲 Randomized all ${pages.length} pages`);
   res.redirect('/?page=all&lib_msg=' + encodeURIComponent('All ' + pages.length + ' pages randomized with fresh photo + redirect'));
+});
+
+// ============================================
+// RESET STATS (keeps fans, zeroes clicks/messages/history)
+// ============================================
+// Reset ONE page's stats
+app.post('/reset-stats', (req, res) => {
+  const pageId = req.query.page;
+  if (!getPage(pageId)) return res.redirect('/?error=Unknown+page');
+  resetStats(pageId);
+  console.log(`📊 Stats reset for page ${pageId} (fans kept)`);
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// Reset ALL pages' stats
+app.post('/reset-stats-all', (req, res) => {
+  const pages = loadPages();
+  pages.forEach(p => resetStats(p.pageId));
+  console.log(`📊 Stats reset for ALL ${pages.length} pages (fans kept)`);
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('All stats reset to 0 on ' + pages.length + ' pages (fan counts kept)'));
 });
 
 // ============================================
