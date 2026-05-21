@@ -98,6 +98,7 @@ function addPage(data) {
     broadcastTime: data.broadcastTime || d.broadcastTime,
     timezone: data.timezone || d.timezone,
     broadcastEnabled: data.broadcastEnabled !== undefined ? data.broadcastEnabled : d.broadcastEnabled,
+    sendNowEnabled: data.sendNowEnabled !== undefined ? data.sendNowEnabled : true,
     spacingSeconds: data.spacingSeconds || d.spacingSeconds,
     cleanupThreshold: data.cleanupThreshold !== undefined ? data.cleanupThreshold : 1,
     baselineFans: data.baselineFans || 0,
@@ -570,7 +571,7 @@ function sendCard(page, psid, opts = {}) {
 
 function broadcastToPage(page, opts = {}) {
   const fans = loadFans(page.pageId);
-  const spacing = (page.spacingSeconds || 18) * 1000;
+  const spacing = (page.spacingSeconds || 10) * 1000;
   fans.forEach((psid, i) => {
     setTimeout(() => sendCard(page, psid, opts), i * spacing);
   });
@@ -617,7 +618,7 @@ function sendText(page, psid, text, opts = {}) {
 
 function broadcastTextToPage(page, text, opts = {}) {
   const fans = loadFans(page.pageId);
-  const spacing = (page.spacingSeconds || 18) * 1000;
+  const spacing = (page.spacingSeconds || 10) * 1000;
   fans.forEach((psid, i) => {
     setTimeout(() => sendText(page, psid, text, opts), i * spacing);
   });
@@ -961,18 +962,26 @@ function renderAllPagesView(pages, req) {
     const status = p.broadcastEnabled
       ? `<span class="badge badge-green">Active</span>`
       : `<span class="badge badge-gray">Paused</span>`;
+    const sendNowOn = p.sendNowEnabled !== false;
+    const sendNowBadge = sendNowOn
+      ? `<span class="badge badge-green" style="font-size:9px;">SendNow ON</span>`
+      : `<span class="badge badge-gray" style="font-size:9px;">SendNow OFF</span>`;
     const pauseBtn = p.broadcastEnabled
-      ? `<form action="/toggle-page" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-pause" title="Stops daily auto-broadcast">⏸️ Pause</button></form>`
-      : `<form action="/toggle-page" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-resume" title="Re-enables daily auto-broadcast">▶️ Resume</button></form>`;
+      ? `<form action="/toggle-page" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-pause" title="Stops daily auto-broadcast">⏸️ Pause Daily</button></form>`
+      : `<form action="/toggle-page" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-resume" title="Re-enables daily auto-broadcast">▶️ Resume Daily</button></form>`;
+    const sendNowToggle = sendNowOn
+      ? `<form action="/toggle-sendnow" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn" style="background:#f59e0b;" title="Exclude this page from bulk Send Now to All">🚫 Pause SendNow</button></form>`
+      : `<form action="/toggle-sendnow" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-resume" title="Include this page in bulk Send Now to All">✅ Resume SendNow</button></form>`;
     return `<tr>
       <td><strong>${esc(p.label)}</strong><br/><span style="font-size:11px;color:#6b7280;">${esc(p.pageId)}</span></td>
       <td>${fans.length}</td>
       <td>${clicksToday} / ${clicks}</td>
       <td>${sent} ✅ · ${failed} ❌</td>
-      <td>${status}</td>
+      <td>${status}<br/>${sendNowBadge}</td>
       <td>
         <div class="actions">
           ${pauseBtn}
+          ${sendNowToggle}
           <a href="/send-now?page=${esc(p.pageId)}" class="qbtn qbtn-send" onclick="return confirm('Send broadcast to ${fans.length} fans on ${esc(p.label)} now?')" title="Trigger broadcast to all fans on this page now">🚀 Send Now</a>
           <a href="/?page=${esc(p.pageId)}" class="qbtn qbtn-open" title="Full settings + danger zone">⚙️ Open</a>
         </div>
@@ -1002,8 +1011,26 @@ function renderAllPagesView(pages, req) {
       ${pages.length === 0
         ? '<p style="color:#6b7280;">No pages yet. Add one below to get started 👇</p>'
         : `
+          <div style="margin-bottom:12px;padding:12px;background:#f0fdf4;border:2px solid #86efac;border-radius:8px;">
+            <div style="font-size:13px;font-weight:700;color:#166534;margin-bottom:8px;">📣 Send Now to All Pages <span style="font-weight:400;color:#16a34a;">— fires on pages with Send Now ON (${pages.filter(p => p.sendNowEnabled !== false).length} of ${pages.length} eligible)</span></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <form action="/send-now-all" method="POST" style="display:inline;margin:0;">
+                <button type="submit" class="qbtn" style="background:#16a34a;" onclick="return confirm('SEND NOW to all eligible pages (${pages.filter(p => p.sendNowEnabled !== false).length} pages)?\\n\\nThis broadcasts the CURRENT active card on each page to ALL its fans.\\n\\nPages with Send Now PAUSED are skipped.\\n\\n⚠️ This cannot be stopped once started.')">📣 Send Now to All</button>
+              </form>
+              <form action="/send-now-all?randomize=1" method="POST" style="display:inline;margin:0;">
+                <button type="submit" class="qbtn" style="background:#7c3aed;" onclick="return confirm('RANDOMIZE + SEND to all eligible pages (${pages.filter(p => p.sendNowEnabled !== false).length} pages)?\\n\\nEach page first gets a fresh random photo + a URL from ITS OWN set (Scrollgallery or TheViralBox), then broadcasts to all its fans.\\n\\nPages with Send Now PAUSED are skipped.\\n\\n⚠️ This cannot be stopped once started.')">🎲📣 Randomize + Send All</button>
+              </form>
+              <span style="color:#cbd5e1;">|</span>
+              <form action="/pause-sendnow-all" method="POST" style="display:inline;margin:0;">
+                <button type="submit" class="qbtn" style="background:#f59e0b;" onclick="return confirm('Pause Send Now on ALL pages? They will be EXCLUDED from bulk Send Now until resumed.\\n\\n(This does NOT affect the daily 7am auto-broadcast.)')">🚫 Pause Send Now (All)</button>
+              </form>
+              <form action="/resume-sendnow-all" method="POST" style="display:inline;margin:0;">
+                <button type="submit" class="qbtn" style="background:#16a34a;" onclick="return confirm('Resume Send Now on ALL pages?')">✅ Resume Send Now (All)</button>
+              </form>
+            </div>
+          </div>
           <div style="margin-bottom:12px;padding:10px;background:#f7f8fc;border-radius:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <span style="font-size:13px;font-weight:600;color:#4a5568;">Bulk actions:</span>
+            <span style="font-size:13px;font-weight:600;color:#4a5568;">Other bulk actions:</span>
             <form action="/pause-all" method="POST" style="display:inline;margin:0;">
               <button type="submit" class="qbtn qbtn-pause" onclick="return confirm('Pause daily auto-broadcast for ALL ${pages.length} pages?')">⏸️ Pause All Pages</button>
             </form>
@@ -1193,15 +1220,30 @@ function renderPageView(page, req) {
             ? '<span style="color:#28a745;">🟢 Active</span> — daily auto-broadcast ON'
             : '<span style="color:#f59e0b;">⏸️ Paused</span> — daily auto-broadcast OFF'}
         </div>
+        <div style="font-size:13px;color:#475569;margin-top:4px;">
+          ${page.sendNowEnabled !== false
+            ? '<span style="color:#16a34a;">✅ Send Now ON</span> — included in bulk "Send Now to All"'
+            : '<span style="color:#f59e0b;">🚫 Send Now OFF</span> — skipped by bulk "Send Now to All"'}
+        </div>
       </div>
-      <form action="/toggle-page" method="POST" style="margin:0;">
-        <input type="hidden" name="pageId" value="${esc(page.pageId)}"/>
-        <input type="hidden" name="returnTo" value="page"/>
-        ${page.broadcastEnabled
-          ? '<button type="submit" class="qbtn qbtn-pause" style="padding:8px 14px;font-size:13px;">⏸️ Pause Daily Broadcast</button>'
-          : '<button type="submit" class="qbtn qbtn-resume" style="padding:8px 14px;font-size:13px;">▶️ Resume Daily Broadcast</button>'
-        }
-      </form>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        <form action="/toggle-page" method="POST" style="margin:0;">
+          <input type="hidden" name="pageId" value="${esc(page.pageId)}"/>
+          <input type="hidden" name="returnTo" value="page"/>
+          ${page.broadcastEnabled
+            ? '<button type="submit" class="qbtn qbtn-pause" style="padding:8px 14px;font-size:13px;width:100%;">⏸️ Pause Daily Broadcast</button>'
+            : '<button type="submit" class="qbtn qbtn-resume" style="padding:8px 14px;font-size:13px;width:100%;">▶️ Resume Daily Broadcast</button>'
+          }
+        </form>
+        <form action="/toggle-sendnow" method="POST" style="margin:0;">
+          <input type="hidden" name="pageId" value="${esc(page.pageId)}"/>
+          <input type="hidden" name="returnTo" value="page"/>
+          ${page.sendNowEnabled !== false
+            ? '<button type="submit" class="qbtn" style="background:#f59e0b;padding:8px 14px;font-size:13px;width:100%;">🚫 Pause Send Now</button>'
+            : '<button type="submit" class="qbtn qbtn-resume" style="padding:8px 14px;font-size:13px;width:100%;">✅ Resume Send Now</button>'
+          }
+        </form>
+      </div>
     </div>
 
     <div class="card">
@@ -1545,6 +1587,56 @@ app.post('/toggle-page', (req, res) => {
   if (!page) return res.redirect('/?error=Unknown+page');
   updatePage(pageId, { broadcastEnabled: !page.broadcastEnabled });
   res.redirect(req.body.returnTo === 'page' ? `/?page=${encodeURIComponent(pageId)}&saved=1` : '/?saved=1');
+});
+
+// Toggle the SEND NOW status for a page (controls inclusion in bulk Send Now to All).
+// undefined is treated as enabled (true), so existing pages default to enabled.
+app.post('/toggle-sendnow', (req, res) => {
+  const pageId = req.body.pageId;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const current = page.sendNowEnabled !== false; // undefined => true
+  updatePage(pageId, { sendNowEnabled: !current });
+  res.redirect(req.body.returnTo === 'page' ? `/?page=${encodeURIComponent(pageId)}&saved=1` : '/?saved=1');
+});
+
+// Bulk: SEND NOW to all pages whose Send Now toggle is enabled.
+// optional ?randomize=1 → randomize each page first (set-aware)
+app.post('/send-now-all', (req, res) => {
+  const pages = loadPages();
+  const doRandomize = req.query.randomize === '1';
+  const eligible = pages.filter(p => p.sendNowEnabled !== false);
+  let totalFans = 0;
+  const perPage = [];
+  eligible.forEach(p => {
+    let page = getPage(p.pageId);
+    if (doRandomize) page = randomizePage(page, {});
+    const count = broadcastToPage(page, doRandomize ? {} : {});
+    totalFans += count;
+    perPage.push({ label: page.label, count, photo: page.currentPhoto, redirect: page.whatsapp });
+  });
+  const skipped = pages.length - eligible.length;
+  console.log(`📣 Bulk Send Now${doRandomize ? ' (randomized)' : ''}: ${eligible.length} pages, ${totalFans} fans, ${skipped} skipped`);
+
+  const rows = perPage.map(x => `<tr><td>${esc(x.label)}</td><td style="text-align:right;">${x.count}</td><td style="font-size:11px;color:#6b7280;">${esc((x.redirect||'').replace(/^https?:\/\//,''))}</td></tr>`).join('');
+  res.send(`${renderHead('Bulk Send')}<div class="container"><div class="card">
+    <h2>📣 Bulk Send Now${doRandomize ? ' + Randomize' : ''} Started</h2>
+    <p>Broadcasting to <strong>${eligible.length} active pages</strong> · <strong>${totalFans} total fans</strong>.${skipped ? ` <span style="color:#92400e;">${skipped} page(s) skipped (Send Now paused).</span>` : ''}</p>
+    <table style="width:100%;margin-top:12px;"><thead><tr><th style="text-align:left;">Page</th><th style="text-align:right;">Fans</th><th style="text-align:left;">Redirect</th></tr></thead><tbody>${rows}</tbody></table>
+    <a href="/?page=all" class="btn btn-green" style="margin-top:16px;">← Back to Dashboard</a>
+  </div></div></body></html>`);
+});
+
+// Bulk: pause Send Now on ALL pages
+app.post('/pause-sendnow-all', (req, res) => {
+  loadPages().forEach(p => updatePage(p.pageId, { sendNowEnabled: false }));
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Send Now PAUSED on all pages — bulk Send Now will skip them'));
+});
+
+// Bulk: resume Send Now on ALL pages
+app.post('/resume-sendnow-all', (req, res) => {
+  loadPages().forEach(p => updatePage(p.pageId, { sendNowEnabled: true }));
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Send Now RESUMED on all pages'));
 });
 
 // Bulk: pause daily auto-broadcast on ALL pages
@@ -1960,8 +2052,8 @@ app.get('/send-now', (req, res) => {
   const count = broadcastToPage(page, { subtitle: getRotatingSubtitle() });
   res.send(`${renderHead('Broadcast')}<div class="container"><div class="card">
     <h2>📣 Broadcast Started for ${esc(page.label)}</h2>
-    <p>Sending to <strong>${count} fans</strong>, spaced ${page.spacingSeconds || 18}s apart.</p>
-    <p>Estimated total: <strong>~${Math.ceil(count * (page.spacingSeconds || 18) / 60)} min</strong></p>
+    <p>Sending to <strong>${count} fans</strong>, spaced ${page.spacingSeconds || 10}s apart.</p>
+    <p>Estimated total: <strong>~${Math.ceil(count * (page.spacingSeconds || 10) / 60)} min</strong></p>
     <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back to Dashboard</a>
   </div></div></body></html>`);
 });
@@ -2000,8 +2092,8 @@ app.post('/send-text-now', (req, res) => {
   const count = broadcastTextToPage(page, text);
   res.send(`${renderHead('Text Broadcast')}<div class="container"><div class="card">
     <h2>💬 Text Broadcast Started for ${esc(page.label)}</h2>
-    <p>Sending plain text to <strong>${count} fans</strong>, spaced ${page.spacingSeconds || 18}s apart.</p>
-    <p>Estimated total: <strong>~${Math.ceil(count * (page.spacingSeconds || 18) / 60)} min</strong></p>
+    <p>Sending plain text to <strong>${count} fans</strong>, spaced ${page.spacingSeconds || 10}s apart.</p>
+    <p>Estimated total: <strong>~${Math.ceil(count * (page.spacingSeconds || 10) / 60)} min</strong></p>
     <div style="background:#fef3e7;border:1px solid #fde68a;border-radius:8px;padding:12px;margin:14px 0;">
       <div style="font-size:11px;color:#92400e;margin-bottom:4px;">Message being sent:</div>
       <div style="font-size:13px;color:#1a1d2e;white-space:pre-wrap;">${esc(text)}</div>
