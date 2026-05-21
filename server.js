@@ -115,6 +115,113 @@ function removePage(pageId) {
 }
 
 // ============================================
+// SHARED LIBRARY (library.json on volume)
+// One global pool of photos + redirect URLs, shared by ALL pages.
+// Add/remove from main dashboard → instantly available everywhere.
+// ============================================
+const LIBRARY_FILE = `${DATA_DIR}/library.json`;
+
+const LIBRARY_SEED_PHOTOS = [
+  'https://i.imgur.com/HeeRTyc.png',
+  'https://i.imgur.com/2MOgc8a.png',
+  'https://i.imgur.com/iroLLAh.png',
+  'https://i.imgur.com/SRqUCwK.png',
+  'https://i.imgur.com/WTFzSCt.png',
+  'https://i.imgur.com/WysXBvK.png',
+  'https://i.imgur.com/AXWkif2.png',
+  'https://i.imgur.com/8QbpzZO.png',
+  'https://i.imgur.com/sDraH1p.png',
+  'https://i.imgur.com/D87Bhpa.png',
+  'https://i.imgur.com/2J3Jne9.png',
+  'https://i.imgur.com/MHT57vc.png'
+];
+
+const LIBRARY_SEED_REDIRECTS = [
+  'https://scrollgallery.com/?p=50252',
+  'https://scrollgallery.com/?p=50259',
+  'https://scrollgallery.com/?p=50271',
+  'https://scrollgallery.com/?p=50278',
+  'https://scrollgallery.com/?p=50285',
+  'https://scrollgallery.com/?p=50292',
+  'https://scrollgallery.com/?p=50299',
+  'https://scrollgallery.com/?p=50306',
+  'https://scrollgallery.com/?p=50313',
+  'https://scrollgallery.com/?p=50321',
+  'https://scrollgallery.com/?p=50328',
+  'https://scrollgallery.com/?p=50335',
+  'https://scrollgallery.com/?p=50342',
+  'https://scrollgallery.com/?p=50349',
+  'https://scrollgallery.com/?p=50356',
+  'https://scrollgallery.com/?p=50363',
+  'https://scrollgallery.com/?p=50370',
+  'https://scrollgallery.com/?p=50377',
+  'https://scrollgallery.com/?p=50385',
+  'https://scrollgallery.com/?p=50392'
+];
+
+function loadLibrary() {
+  try {
+    const lib = JSON.parse(fs.readFileSync(LIBRARY_FILE, 'utf8'));
+    return {
+      photos: Array.isArray(lib.photos) ? lib.photos : [],
+      redirects: Array.isArray(lib.redirects) ? lib.redirects : []
+    };
+  } catch {
+    // First run — seed with the initial pools and persist
+    const seed = { photos: [...LIBRARY_SEED_PHOTOS], redirects: [...LIBRARY_SEED_REDIRECTS] };
+    try { saveLibrary(seed); } catch {}
+    return seed;
+  }
+}
+function saveLibrary(lib) {
+  fs.writeFileSync(LIBRARY_FILE, JSON.stringify(lib, null, 2));
+}
+
+// Pick a random item from arr that isn't `avoid` (when possible)
+function pickRandom(arr, avoid) {
+  if (!arr || arr.length === 0) return undefined;
+  if (arr.length === 1) return arr[0];
+  const pool = arr.filter(x => x !== avoid);
+  const choices = pool.length ? pool : arr;
+  return choices[Math.floor(Math.random() * choices.length)];
+}
+
+// Randomize one page's active photo + redirect from the shared library.
+// Honors "different from previous" by avoiding the page's last picks.
+// opts: { photo: true, redirect: true } — which to randomize (default both)
+function randomizePage(page, opts = {}) {
+  const doPhoto = opts.photo !== false;
+  const doRedirect = opts.redirect !== false;
+  const lib = loadLibrary();
+  const updates = {};
+
+  if (doPhoto && lib.photos.length) {
+    const newPhoto = pickRandom(lib.photos, page.lastPhoto || page.currentPhoto);
+    if (newPhoto) {
+      updates.currentPhoto = newPhoto;
+      updates.lastPhoto = newPhoto;
+      // Make sure it's in the page's own photo list too (so the gallery shows it)
+      const photos = Array.isArray(page.photos) ? [...page.photos] : [];
+      if (!photos.includes(newPhoto)) photos.unshift(newPhoto);
+      updates.photos = photos;
+    }
+  }
+
+  if (doRedirect && lib.redirects.length) {
+    const newRedirect = pickRandom(lib.redirects, page.lastRedirect || page.whatsapp);
+    if (newRedirect) {
+      updates.whatsapp = newRedirect;
+      updates.lastRedirect = newRedirect;
+    }
+  }
+
+  if (Object.keys(updates).length) {
+    return updatePage(page.pageId, updates);
+  }
+  return page;
+}
+
+// ============================================
 // FANS (per page)
 // ============================================
 function fansFile(pageId) { return `${DATA_DIR}/fans-${pageId}.json`; }
@@ -613,10 +720,120 @@ function renderAlerts(req) {
   if (q.saved) alerts += `<div class="alert alert-success">✅ Saved!</div>`;
   if (q.schedule_saved) alerts += `<div class="alert alert-success">✅ Schedule saved!</div>`;
   if (q.text_saved) alerts += `<div class="alert alert-success">✅ Text template saved!</div>`;
+  if (q.lib_msg) alerts += `<div class="alert alert-success">✅ ${esc(q.lib_msg)}</div>`;
   if (q.added) alerts += `<div class="alert alert-success">✅ Page added! Webhook is now active for it.</div>`;
   if (q.removed) alerts += `<div class="alert alert-success">✅ Page removed.</div>`;
   if (q.error) alerts += `<div class="alert alert-error">❌ ${esc(q.error)}</div>`;
   return alerts;
+}
+
+function renderPageLibrarySection(page) {
+  const lib = loadLibrary();
+  const pid = esc(page.pageId);
+
+  const photoThumbs = lib.photos.map((url, i) => {
+    const active = url === page.currentPhoto;
+    return `<a href="/set-active-from-library?page=${pid}&photoIndex=${i}" title="Set as active photo" style="position:relative;display:block;border:2px solid ${active ? '#28a745' : '#e2e8f0'};border-radius:8px;overflow:hidden;text-decoration:none;">
+      <img src="${esc(url)}" style="width:100%;height:70px;object-fit:cover;display:block;" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"/>
+      <div style="display:none;width:100%;height:70px;align-items:center;justify-content:center;background:#f1f5f9;color:#94a3b8;font-size:9px;text-align:center;padding:3px;">${esc(url.split('/').pop())}</div>
+      ${active ? '<div style="position:absolute;top:2px;right:2px;background:#28a745;color:#fff;font-size:9px;padding:1px 5px;border-radius:4px;">★ active</div>' : ''}
+    </a>`;
+  }).join('');
+
+  const redirectBtns = lib.redirects.map((url, i) => {
+    const active = url === page.whatsapp;
+    const short = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
+    return `<a href="/set-active-from-library?page=${pid}&redirectIndex=${i}" title="Set as active redirect" style="display:inline-flex;align-items:center;gap:4px;background:${active ? '#dcfce7' : '#fff'};border:1px solid ${active ? '#28a745' : '#e2e8f0'};border-radius:6px;padding:5px 9px;font-size:11px;font-family:monospace;text-decoration:none;color:${active ? '#166534' : '#475569'};">
+      ${active ? '★ ' : ''}${esc(short)}
+    </a>`;
+  }).join('');
+
+  return `
+    <div class="card" style="border:2px solid #ede9fe;">
+      <h2>🎲 Quick Switch &amp; Randomize <span style="font-size:12px;font-weight:400;color:#8b5cf6;">— from shared library</span></h2>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+        <form action="/randomize-page?page=${pid}" method="POST" style="margin:0;">
+          <button type="submit" class="btn" style="background:#8b5cf6;color:#fff;">🎲 Randomize (Photo + URL)</button>
+        </form>
+        <form action="/randomize-page?page=${pid}&only=photo" method="POST" style="margin:0;">
+          <button type="submit" class="btn" style="background:#a78bfa;color:#fff;">🎲 Photo Only</button>
+        </form>
+        <form action="/randomize-page?page=${pid}&only=redirect" method="POST" style="margin:0;">
+          <button type="submit" class="btn" style="background:#a78bfa;color:#fff;">🎲 URL Only</button>
+        </form>
+        <form action="/randomize-and-send?page=${pid}" method="POST" style="margin:0;">
+          <button type="submit" class="btn" style="background:#7c3aed;color:#fff;" onclick="return confirm('Randomize photo + URL, then immediately broadcast to all fans?')">🎲🚀 Randomize + Send</button>
+        </form>
+      </div>
+
+      <div style="background:#faf5ff;border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px;">
+        <div><strong>Active now:</strong></div>
+        <div style="margin-top:4px;color:#6b21a8;">📸 ${esc((page.currentPhoto || '(none)').split('/').pop())}</div>
+        <div style="color:#6b21a8;">🔗 ${esc((page.whatsapp || '(none)').replace(/^https?:\/\//, ''))}</div>
+      </div>
+
+      <h3 style="font-size:14px;color:#1a1d2e;margin:0 0 8px;">📸 Tap a photo to set active (${lib.photos.length})</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(85px,1fr));gap:8px;margin-bottom:16px;">
+        ${photoThumbs || '<span style="color:#94a3b8;font-size:12px;">Library empty — add photos on the main dashboard.</span>'}
+      </div>
+
+      <h3 style="font-size:14px;color:#1a1d2e;margin:0 0 8px;">🔗 Tap a URL to set active (${lib.redirects.length})</h3>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;">
+        ${redirectBtns || '<span style="color:#94a3b8;font-size:12px;">Library empty — add redirect URLs on the main dashboard.</span>'}
+      </div>
+
+      <div class="helper" style="margin-top:12px;">Changes here affect this page only. To edit the shared pool for all pages, use the 🗂️ Shared Library on the <a href="/?page=all">main dashboard</a>.</div>
+    </div>`;
+}
+
+function renderLibraryManager() {
+  const lib = loadLibrary();
+  const photoChips = lib.photos.map((url, i) => `
+    <div style="position:relative;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff;">
+      <img src="${esc(url)}" style="width:100%;height:80px;object-fit:cover;display:block;" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"/>
+      <div style="display:none;width:100%;height:80px;align-items:center;justify-content:center;background:#f1f5f9;color:#94a3b8;font-size:10px;text-align:center;padding:4px;">${esc(url.split('/').pop())}</div>
+      <a href="/library-remove-photo?index=${i}" onclick="return confirm('Remove this photo from the shared library? It stays on pages already using it.')" style="position:absolute;top:3px;right:3px;background:rgba(220,38,38,0.9);color:#fff;width:18px;height:18px;border-radius:50%;font-size:11px;line-height:18px;text-align:center;text-decoration:none;">×</a>
+      <div style="font-size:9px;color:#94a3b8;text-align:center;padding:2px;">#${i + 1}</div>
+    </div>`).join('');
+
+  const redirectChips = lib.redirects.map((url, i) => {
+    const short = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
+    return `<div style="display:inline-flex;align-items:center;gap:4px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:4px 8px;font-size:11px;font-family:monospace;">
+      <span style="color:#475569;">${esc(short)}</span>
+      <a href="/library-remove-redirect?index=${i}" onclick="return confirm('Remove this redirect URL from the shared library?')" style="color:#dc2626;text-decoration:none;font-weight:700;">×</a>
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="card" style="border:2px solid #ede9fe;">
+      <h2>🗂️ Shared Library <span style="font-size:12px;font-weight:400;color:#8b5cf6;">— available on every page</span></h2>
+      <p style="color:#6b7280;font-size:13px;">Add photos and redirect URLs here once. They appear on <strong>all pages</strong> for one-click "set active" and feed the 🎲 randomizer. Edits here update every page instantly.</p>
+
+      <div style="margin-top:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <h3 style="margin:0;font-size:14px;color:#1a1d2e;">📸 Shared Photos (${lib.photos.length})</h3>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;margin-bottom:10px;">
+          ${photoChips || '<span style="color:#94a3b8;font-size:12px;">No photos yet.</span>'}
+        </div>
+        <form action="/library-add-photo" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+          <textarea name="photoUrls" placeholder="Paste one or more image URLs (one per line or comma-separated)&#10;https://i.imgur.com/xxxxx.png" style="flex:1;min-width:260px;min-height:48px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:monospace;font-size:12px;"></textarea>
+          <button type="submit" class="btn btn-green" style="white-space:nowrap;">+ Add Photo(s)</button>
+        </form>
+      </div>
+
+      <div style="margin-top:20px;border-top:1px solid #f1f5f9;padding-top:16px;">
+        <h3 style="margin:0 0 8px;font-size:14px;color:#1a1d2e;">🔗 Shared Redirect URLs (${lib.redirects.length})</h3>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
+          ${redirectChips || '<span style="color:#94a3b8;font-size:12px;">No redirect URLs yet.</span>'}
+        </div>
+        <form action="/library-add-redirect" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+          <textarea name="redirectUrls" placeholder="Paste one or more redirect URLs (one per line or comma-separated)&#10;https://example.com/?p=12345" style="flex:1;min-width:260px;min-height:48px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:monospace;font-size:12px;"></textarea>
+          <button type="submit" class="btn btn-green" style="white-space:nowrap;">+ Add URL(s)</button>
+        </form>
+      </div>
+    </div>`;
 }
 
 function renderAllPagesView(pages, req) {
@@ -696,6 +913,9 @@ function renderAllPagesView(pages, req) {
             <form action="/enable-cleanup-all" method="POST" style="display:inline;margin:0;">
               <button type="submit" class="qbtn" style="background:#28a745;" onclick="return confirm('Set auto-cleanup threshold to 1 (remove fans on 1st failure) for ALL ${pages.length} pages?\\n\\nThis is the default, aggressive cleanup mode.')">🧹 Enable Cleanup (All)</button>
             </form>
+            <form action="/randomize-all" method="POST" style="display:inline;margin:0;">
+              <button type="submit" class="qbtn" style="background:#8b5cf6;" onclick="return confirm('Randomize photo + redirect URL for ALL ${pages.length} pages?\\n\\nEach page gets a fresh random combo from the shared library, different from its previous pick.')">🎲 Randomize ALL Pages</button>
+            </form>
             <span style="font-size:11px;color:#6b7280;margin-left:8px;display:block;width:100%;">— useful before deploying code changes</span>
           </div>
           <table>
@@ -704,6 +924,8 @@ function renderAllPagesView(pages, req) {
           </table>`
       }
     </div>
+
+    ${renderLibraryManager()}
 
     <div class="card">
       <h2>➕ Add New Page</h2>
@@ -1068,6 +1290,8 @@ function renderPageView(page, req) {
       <div class="helper" style="margin-top:8px;">All cards now use <strong>square (1:1)</strong> photos — bigger card on Messenger. Upload square photos (1:1 ratio) for best results, or Facebook will auto-crop. Green border = currently active. Click any URL field to select it for copy.</div>
     </div>
 
+    ${renderPageLibrarySection(page)}
+
     <div class="card">
       <h2>📣 Broadcasts</h2>
 
@@ -1329,6 +1553,130 @@ app.get('/set-active-photo', (req, res) => {
 });
 
 // ============================================
+// SHARED LIBRARY MANAGEMENT (from main dashboard)
+// ============================================
+// Add one or more photo URLs to the shared library
+app.post('/library-add-photo', (req, res) => {
+  const lib = loadLibrary();
+  const raw = req.body.photoUrls || req.body.photoUrl || '';
+  const urls = raw.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  let added = 0;
+  urls.forEach(u => {
+    if (!lib.photos.includes(u)) { lib.photos.push(u); added++; }
+  });
+  saveLibrary(lib);
+  res.redirect(`/?page=all&lib_msg=${encodeURIComponent('Added ' + added + ' photo(s) to shared library')}`);
+});
+
+// Remove a photo from the shared library
+app.get('/library-remove-photo', (req, res) => {
+  const lib = loadLibrary();
+  const i = parseInt(req.query.index);
+  if (i >= 0 && i < lib.photos.length) lib.photos.splice(i, 1);
+  saveLibrary(lib);
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Photo removed from shared library'));
+});
+
+// Add one or more redirect URLs to the shared library
+app.post('/library-add-redirect', (req, res) => {
+  const lib = loadLibrary();
+  const raw = req.body.redirectUrls || req.body.redirectUrl || '';
+  const urls = raw.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  let added = 0;
+  urls.forEach(u => {
+    if (!lib.redirects.includes(u)) { lib.redirects.push(u); added++; }
+  });
+  saveLibrary(lib);
+  res.redirect(`/?page=all&lib_msg=${encodeURIComponent('Added ' + added + ' redirect URL(s) to shared library')}`);
+});
+
+// Remove a redirect from the shared library
+app.get('/library-remove-redirect', (req, res) => {
+  const lib = loadLibrary();
+  const i = parseInt(req.query.index);
+  if (i >= 0 && i < lib.redirects.length) lib.redirects.splice(i, 1);
+  saveLibrary(lib);
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Redirect URL removed from shared library'));
+});
+
+// ============================================
+// SET ACTIVE FROM SHARED LIBRARY (per page)
+// ============================================
+app.get('/set-active-from-library', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const lib = loadLibrary();
+  const updates = {};
+
+  if (req.query.photoIndex !== undefined) {
+    const i = parseInt(req.query.photoIndex);
+    if (i >= 0 && i < lib.photos.length) {
+      const photo = lib.photos[i];
+      updates.currentPhoto = photo;
+      updates.lastPhoto = photo;
+      const photos = Array.isArray(page.photos) ? [...page.photos] : [];
+      if (!photos.includes(photo)) photos.unshift(photo);
+      updates.photos = photos;
+    }
+  }
+  if (req.query.redirectIndex !== undefined) {
+    const i = parseInt(req.query.redirectIndex);
+    if (i >= 0 && i < lib.redirects.length) {
+      updates.whatsapp = lib.redirects[i];
+      updates.lastRedirect = lib.redirects[i];
+    }
+  }
+  if (Object.keys(updates).length) updatePage(pageId, updates);
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// ============================================
+// RANDOMIZE
+// ============================================
+// Randomize ONE page (photo + redirect, or just one via ?only=photo|redirect)
+app.post('/randomize-page', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const only = req.query.only;
+  const opts = only === 'photo' ? { photo: true, redirect: false }
+            : only === 'redirect' ? { photo: false, redirect: true }
+            : {};
+  randomizePage(page, opts);
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// Randomize ONE page then immediately broadcast
+app.post('/randomize-and-send', (req, res) => {
+  const pageId = req.query.page;
+  let page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  page = randomizePage(page, {});
+  const count = broadcastToPage(page, {});
+  res.send(`${renderHead('Randomize + Send')}<div class="container"><div class="card">
+    <h2>🎲 Randomized & Broadcasting — ${esc(page.label)}</h2>
+    <p>New random photo + redirect selected, sending to <strong>${count} fans</strong>.</p>
+    <div style="background:#f0f6ff;border:1px solid #b5d4f4;border-radius:8px;padding:12px;margin:14px 0;font-size:13px;">
+      <div>📸 Photo: <code style="font-size:11px;">${esc(page.currentPhoto || '')}</code></div>
+      <div style="margin-top:6px;">🔗 Redirect: <code style="font-size:11px;">${esc(page.whatsapp || '')}</code></div>
+    </div>
+    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back to Dashboard</a>
+  </div></div></body></html>`);
+});
+
+// Randomize ALL pages (each gets a fresh, different-from-previous combo)
+app.post('/randomize-all', (req, res) => {
+  const pages = loadPages();
+  pages.forEach(p => {
+    const fresh = getPage(p.pageId);
+    if (fresh) randomizePage(fresh, {});
+  });
+  console.log(`🎲 Randomized all ${pages.length} pages`);
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('All ' + pages.length + ' pages randomized with fresh photo + redirect'));
+});
+
+// ============================================
 // FANS
 // ============================================
 app.post('/add-fan', (req, res) => {
@@ -1574,7 +1922,18 @@ cron.schedule('* * * * *', () => {
     if (curH === hh && curM === mm && broadcastGuard[page.pageId] !== curDate) {
       broadcastGuard[page.pageId] = curDate;
       console.log(`⏰ [${page.label}] Daily broadcast triggered at ${curH}:${curM} ${page.timezone}`);
-      broadcastToPage(page, { subtitle: getRotatingSubtitle() });
+      // Auto-randomize photo + redirect from shared library (different from previous day)
+      let fresh = page;
+      try {
+        const lib = loadLibrary();
+        if (lib.photos.length || lib.redirects.length) {
+          fresh = randomizePage(page, {});
+          console.log(`🎲 [${page.label}] Auto-randomized → photo=${(fresh.currentPhoto||'').split('/').pop()} redirect=${(fresh.whatsapp||'').replace(/^https?:\/\//,'')}`);
+        }
+      } catch (e) {
+        console.error(`[${page.label}] Auto-randomize failed:`, e.message);
+      }
+      broadcastToPage(fresh, { subtitle: getRotatingSubtitle() });
     }
   });
 });
