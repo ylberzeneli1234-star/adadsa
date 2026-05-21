@@ -404,6 +404,53 @@ function broadcastToPage(page, opts = {}) {
 }
 
 // ============================================
+// PLAIN TEXT MESSAGES (Template 2 — no card, just text)
+// Same failure-tracking and auto-cleanup logic as sendCard.
+// ============================================
+function sendText(page, psid, text, opts = {}) {
+  return fetch(`https://graph.facebook.com/v2.6/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: psid },
+      message: { text: text }
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.error) {
+      trackMessage(page.pageId, false);
+      const code = data.error.code;
+      const msg = data.error.message || '';
+      console.log(`[${page.label}] Text failed (psid ${psid}, code ${code}):`, msg);
+      const unreachable =
+        code === 10 || code === 100 || code === 551 ||
+        /outside [\w\s]*allowed window/i.test(msg) ||
+        /no matching user/i.test(msg) ||
+        /cannot receive messages/i.test(msg) ||
+        /policy[- ]?enforcement/i.test(msg);
+      if (unreachable && !opts.skipRemoval) {
+        trackFailureForFan(page.pageId, psid, `FB error ${code}: ${msg.slice(0, 60)}`);
+      }
+    } else {
+      trackMessage(page.pageId, true);
+      clearFailuresForFan(page.pageId, psid);
+    }
+    return data;
+  }).catch(err => {
+    trackMessage(page.pageId, false);
+    console.error(`[${page.label}] Text error (psid ${psid}):`, err.message);
+    return { error: { message: err.message } };
+  });
+}
+
+function broadcastTextToPage(page, text, opts = {}) {
+  const fans = loadFans(page.pageId);
+  const spacing = (page.spacingSeconds || 18) * 1000;
+  fans.forEach((psid, i) => {
+    setTimeout(() => sendText(page, psid, text, opts), i * spacing);
+  });
+  return fans.length;
+}
+
+// ============================================
 // PUBLIC ROUTES — no auth (Facebook + fans hit these)
 // ============================================
 
@@ -565,6 +612,7 @@ function renderAlerts(req) {
   let alerts = '';
   if (q.saved) alerts += `<div class="alert alert-success">✅ Saved!</div>`;
   if (q.schedule_saved) alerts += `<div class="alert alert-success">✅ Schedule saved!</div>`;
+  if (q.text_saved) alerts += `<div class="alert alert-success">✅ Text template saved!</div>`;
   if (q.added) alerts += `<div class="alert alert-success">✅ Page added! Webhook is now active for it.</div>`;
   if (q.removed) alerts += `<div class="alert alert-success">✅ Page removed.</div>`;
   if (q.error) alerts += `<div class="alert alert-error">❌ ${esc(q.error)}</div>`;
@@ -642,7 +690,13 @@ function renderAllPagesView(pages, req) {
             <form action="/resume-all" method="POST" style="display:inline;margin:0;">
               <button type="submit" class="qbtn qbtn-resume" onclick="return confirm('Resume daily auto-broadcast for ALL ${pages.length} pages?')">▶️ Resume All Pages</button>
             </form>
-            <span style="font-size:11px;color:#6b7280;margin-left:8px;">— useful before deploying code changes</span>
+            <form action="/disable-cleanup-all" method="POST" style="display:inline;margin:0;">
+              <button type="submit" class="qbtn" style="background:#3a8dde;" onclick="return confirm('Set auto-cleanup threshold to 0 (NEVER remove fans) for ALL ${pages.length} pages?\\n\\nFans whose 24h window expired will stay in the list but their sends will keep failing.')">🛡️ Disable Cleanup (All)</button>
+            </form>
+            <form action="/enable-cleanup-all" method="POST" style="display:inline;margin:0;">
+              <button type="submit" class="qbtn" style="background:#28a745;" onclick="return confirm('Set auto-cleanup threshold to 1 (remove fans on 1st failure) for ALL ${pages.length} pages?\\n\\nThis is the default, aggressive cleanup mode.')">🧹 Enable Cleanup (All)</button>
+            </form>
+            <span style="font-size:11px;color:#6b7280;margin-left:8px;display:block;width:100%;">— useful before deploying code changes</span>
           </div>
           <table>
             <thead><tr><th>Page</th><th>Fans</th><th>Clicks (today / total)</th><th>Messages</th><th>Status</th><th>Quick actions</th></tr></thead>
@@ -892,31 +946,6 @@ function renderPageView(page, req) {
     </div>
 
     <div class="card">
-      <h2>🔑 Page Settings (Token & Label)</h2>
-      <details>
-        <summary style="cursor:pointer;color:#3a8dde;font-size:13px;font-weight:600;padding:4px 0;">Click to edit token or rename this page</summary>
-        <form action="/edit-page?page=${esc(page.pageId)}" method="POST" style="margin-top:10px;">
-          <div class="row">
-            <div>
-              <label>Page Label / Nickname</label>
-              <input name="label" value="${esc(page.label)}" required/>
-              <div class="helper">Friendly name shown in dashboard (e.g. "Mature", "Friend Requests").</div>
-            </div>
-            <div>
-              <label>Page ID (read-only)</label>
-              <input value="${esc(page.pageId)}" readonly style="background:#f0f0f0;cursor:not-allowed;font-family:monospace;"/>
-              <div class="helper">Cannot be changed. Remove + re-add the page to use a different FB page.</div>
-            </div>
-          </div>
-          <label>Page Access Token</label>
-          <input name="accessToken" value="${esc(page.accessToken)}" required style="font-family:monospace;font-size:11px;"/>
-          <div class="helper">Long string starting with "EAA...". Regenerate in FB Developer if FB returns code 190 (token / permission errors). Make sure to grant: <code>pages_messaging</code>, <code>pages_show_list</code>, <code>pages_read_engagement</code>, <code>pages_manage_metadata</code>.</div>
-          <button type="submit" class="btn btn-green" onclick="return confirm('Update page settings? All stats, fans, and history will be preserved.')">💾 Save Page Settings</button>
-        </form>
-      </details>
-    </div>
-
-    <div class="card">
       <h2>✏️ Card / Message Editor</h2>
       <form action="/update-settings?page=${esc(page.pageId)}" method="POST">
         <div class="row">
@@ -945,6 +974,41 @@ function renderPageView(page, req) {
         <input name="label" value="${esc(page.label)}"/>
         <button type="submit" class="btn btn-green">💾 Save Settings</button>
       </form>
+    </div>
+
+    <div class="card">
+      <h2>📝 Template Manager — 2 Templates</h2>
+      <p style="font-size:12px;color:#6b7280;margin-bottom:14px;">Choose what to broadcast: the photo card (Template 1) OR a plain text message (Template 2). Each has its own Send Now button.</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+
+        <!-- TEMPLATE 1: CARD -->
+        <div style="background:#eef6ff;border:1px solid #b5d4f4;border-radius:8px;padding:12px;">
+          <h3 style="margin:0 0 8px;color:#0c447c;font-size:14px;">🖼️ Template 1: Photo Card</h3>
+          <p style="font-size:11px;color:#0c447c;margin:0 0 10px;line-height:1.4;">Sends the card with image + title + subtitle + button (configured in Card / Message Editor above).</p>
+          <div style="background:#fff;border-radius:6px;padding:8px;margin-bottom:10px;border:1px solid #d1d5db;">
+            <div style="font-size:10px;color:#6b7280;margin-bottom:3px;">Preview:</div>
+            <div style="font-size:11px;font-weight:600;color:#1a1d2e;">${esc(page.title || '(no title)')}</div>
+            <div style="font-size:10px;color:#4a5568;margin:2px 0;">${esc((page.subtitle || '').slice(0, 50))}${(page.subtitle || '').length > 50 ? '...' : ''}</div>
+            <div style="font-size:10px;color:#3a8dde;">+ image + button</div>
+          </div>
+          <a href="/send-now?page=${esc(page.pageId)}" class="btn btn-green" style="display:block;text-align:center;margin:0;" onclick="return confirm('Send PHOTO CARD to ${fans.length} fans now?')">🚀 Send Card to All</a>
+        </div>
+
+        <!-- TEMPLATE 2: PLAIN TEXT -->
+        <div style="background:#fef3e7;border:1px solid #fde68a;border-radius:8px;padding:12px;">
+          <h3 style="margin:0 0 8px;color:#92400e;font-size:14px;">💬 Template 2: Plain Text</h3>
+          <p style="font-size:11px;color:#92400e;margin:0 0 10px;line-height:1.4;">Just a simple text message — no card, no photo, no button. Perfect for questions.</p>
+          <form action="/save-text-template?page=${esc(page.pageId)}" method="POST" style="margin:0;">
+            <textarea name="textTemplate" placeholder="e.g. Hello! Where are you from? 💕" style="width:100%;min-height:80px;padding:7px 9px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;font-family:inherit;resize:vertical;background:#fff;">${esc(page.textTemplate || '')}</textarea>
+            <button type="submit" class="btn" style="background:#92400e;width:100%;margin-top:6px;">💾 Save Text</button>
+          </form>
+          <form action="/send-text-now?page=${esc(page.pageId)}" method="POST" style="margin:6px 0 0;">
+            <button type="submit" class="btn btn-green" style="display:block;text-align:center;margin:0;width:100%;" onclick="return confirm('Send TEXT MESSAGE to ${fans.length} fans now?\\n\\nText: \\&quot;${esc((page.textTemplate || '').replace(/"/g, '\\\\&quot;').slice(0, 80))}\\&quot;\\n\\nSave first if you just edited.')">🚀 Send Text to All</button>
+          </form>
+        </div>
+
+      </div>
     </div>
 
     <div class="card">
@@ -1167,6 +1231,26 @@ app.post('/resume-all', (req, res) => {
   res.redirect('/?saved=1');
 });
 
+// Bulk: disable auto-cleanup on ALL pages (set threshold to 0 = never remove)
+app.post('/disable-cleanup-all', (req, res) => {
+  const pages = loadPages();
+  pages.forEach(p => {
+    updatePage(p.pageId, { cleanupThreshold: 0 });
+  });
+  console.log(`Bulk: auto-cleanup DISABLED on all ${pages.length} pages`);
+  res.redirect('/?saved=1');
+});
+
+// Bulk: enable auto-cleanup on ALL pages (set threshold to 1 = aggressive)
+app.post('/enable-cleanup-all', (req, res) => {
+  const pages = loadPages();
+  pages.forEach(p => {
+    updatePage(p.pageId, { cleanupThreshold: 1 });
+  });
+  console.log(`Bulk: auto-cleanup ENABLED (threshold=1) on all ${pages.length} pages`);
+  res.redirect('/?saved=1');
+});
+
 // ============================================
 // PER-PAGE SETTINGS / SCHEDULE
 // ============================================
@@ -1181,25 +1265,6 @@ app.post('/update-settings', (req, res) => {
     currentPhoto: req.body.currentPhoto || undefined,
     label: req.body.label || undefined
   });
-  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
-});
-
-// Edit page settings (token, label). Preserves all fans, stats, and broadcast history.
-// Used to fix code 190 (permission) errors without losing data.
-app.post('/edit-page', (req, res) => {
-  const pageId = req.query.page;
-  const page = getPage(pageId);
-  if (!page) return res.redirect('/?error=Unknown+page');
-  const newLabel = (req.body.label || '').trim();
-  const newToken = (req.body.accessToken || '').trim();
-  if (!newLabel) return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=Label+cannot+be+empty`);
-  if (!newToken) return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=Token+cannot+be+empty`);
-  if (newToken.length < 50) return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=Token+looks+too+short+%E2%80%94+should+start+with+EAA...`);
-  updatePage(pageId, {
-    label: newLabel,
-    accessToken: newToken
-  });
-  console.log(`[${pageId}] Page settings updated — label: "${newLabel}", token: ${newToken.slice(0, 12)}...${newToken.slice(-4)}`);
   res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
 });
 
@@ -1416,6 +1481,37 @@ app.post('/send-custom', (req, res) => {
     <h2>🚀 Custom Broadcast Started for ${esc(page.label)}</h2>
     <p>Sending to <strong>${count} fans</strong>.</p>
     <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
+  </div></div></body></html>`);
+});
+
+// ============================================
+// TEMPLATE 2: PLAIN TEXT — save + broadcast
+// ============================================
+app.post('/save-text-template', (req, res) => {
+  const pageId = req.query.page;
+  if (!getPage(pageId)) return res.redirect('/?error=Unknown+page');
+  updatePage(pageId, { textTemplate: req.body.textTemplate || '' });
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&text_saved=1`);
+});
+
+app.post('/send-text-now', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const text = (page.textTemplate || '').trim();
+  if (!text) {
+    return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=${encodeURIComponent('No text template saved. Type a message and click Save Text first.')}`);
+  }
+  const count = broadcastTextToPage(page, text);
+  res.send(`${renderHead('Text Broadcast')}<div class="container"><div class="card">
+    <h2>💬 Text Broadcast Started for ${esc(page.label)}</h2>
+    <p>Sending plain text to <strong>${count} fans</strong>, spaced ${page.spacingSeconds || 18}s apart.</p>
+    <p>Estimated total: <strong>~${Math.ceil(count * (page.spacingSeconds || 18) / 60)} min</strong></p>
+    <div style="background:#fef3e7;border:1px solid #fde68a;border-radius:8px;padding:12px;margin:14px 0;">
+      <div style="font-size:11px;color:#92400e;margin-bottom:4px;">Message being sent:</div>
+      <div style="font-size:13px;color:#1a1d2e;white-space:pre-wrap;">${esc(text)}</div>
+    </div>
+    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back to Dashboard</a>
   </div></div></body></html>`);
 });
 
