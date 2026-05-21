@@ -164,7 +164,26 @@ const LIBRARY_SEED_REDIRECT_SETS = {
     'https://scrollgallery.com/?p=50385',
     'https://scrollgallery.com/?p=50392'
   ],
-  'TheViralBox': []
+  'TheViralBox': [
+    'https://photos.theviralbox.info/archives/1945',
+    'https://photos.theviralbox.info/archives/1953',
+    'https://photos.theviralbox.info/archives/1960',
+    'https://photos.theviralbox.info/archives/1967',
+    'https://photos.theviralbox.info/archives/1979',
+    'https://photos.theviralbox.info/archives/1986',
+    'https://photos.theviralbox.info/archives/1993',
+    'https://photos.theviralbox.info/archives/2000',
+    'https://photos.theviralbox.info/archives/2007',
+    'https://photos.theviralbox.info/archives/2014',
+    'https://photos.theviralbox.info/archives/2021',
+    'https://photos.theviralbox.info/archives/2028',
+    'https://photos.theviralbox.info/archives/2035',
+    'https://photos.theviralbox.info/archives/2042',
+    'https://photos.theviralbox.info/archives/2049',
+    'https://photos.theviralbox.info/archives/2056',
+    'https://photos.theviralbox.info/archives/2063',
+    'https://photos.theviralbox.info/archives/2070'
+  ]
 };
 
 function loadLibrary() {
