@@ -136,45 +136,84 @@ const LIBRARY_SEED_PHOTOS = [
   'https://i.imgur.com/MHT57vc.png'
 ];
 
-const LIBRARY_SEED_REDIRECTS = [
-  'https://scrollgallery.com/?p=50252',
-  'https://scrollgallery.com/?p=50259',
-  'https://scrollgallery.com/?p=50271',
-  'https://scrollgallery.com/?p=50278',
-  'https://scrollgallery.com/?p=50285',
-  'https://scrollgallery.com/?p=50292',
-  'https://scrollgallery.com/?p=50299',
-  'https://scrollgallery.com/?p=50306',
-  'https://scrollgallery.com/?p=50313',
-  'https://scrollgallery.com/?p=50321',
-  'https://scrollgallery.com/?p=50328',
-  'https://scrollgallery.com/?p=50335',
-  'https://scrollgallery.com/?p=50342',
-  'https://scrollgallery.com/?p=50349',
-  'https://scrollgallery.com/?p=50356',
-  'https://scrollgallery.com/?p=50363',
-  'https://scrollgallery.com/?p=50370',
-  'https://scrollgallery.com/?p=50377',
-  'https://scrollgallery.com/?p=50385',
-  'https://scrollgallery.com/?p=50392'
-];
+// Redirect Sets: named pools of redirect URLs. Each page is assigned to one set.
+// Photos stay in ONE shared pool (all pages). Only redirects are split by set.
+const DEFAULT_SET = 'Scrollgallery';
+const SECOND_SET = 'TheViralBox';
+
+const LIBRARY_SEED_REDIRECT_SETS = {
+  'Scrollgallery': [
+    'https://scrollgallery.com/?p=50252',
+    'https://scrollgallery.com/?p=50259',
+    'https://scrollgallery.com/?p=50271',
+    'https://scrollgallery.com/?p=50278',
+    'https://scrollgallery.com/?p=50285',
+    'https://scrollgallery.com/?p=50292',
+    'https://scrollgallery.com/?p=50299',
+    'https://scrollgallery.com/?p=50306',
+    'https://scrollgallery.com/?p=50313',
+    'https://scrollgallery.com/?p=50321',
+    'https://scrollgallery.com/?p=50328',
+    'https://scrollgallery.com/?p=50335',
+    'https://scrollgallery.com/?p=50342',
+    'https://scrollgallery.com/?p=50349',
+    'https://scrollgallery.com/?p=50356',
+    'https://scrollgallery.com/?p=50363',
+    'https://scrollgallery.com/?p=50370',
+    'https://scrollgallery.com/?p=50377',
+    'https://scrollgallery.com/?p=50385',
+    'https://scrollgallery.com/?p=50392'
+  ],
+  'TheViralBox': []
+};
 
 function loadLibrary() {
+  let lib;
   try {
-    const lib = JSON.parse(fs.readFileSync(LIBRARY_FILE, 'utf8'));
-    return {
-      photos: Array.isArray(lib.photos) ? lib.photos : [],
-      redirects: Array.isArray(lib.redirects) ? lib.redirects : []
-    };
+    lib = JSON.parse(fs.readFileSync(LIBRARY_FILE, 'utf8'));
   } catch {
-    // First run — seed with the initial pools and persist
-    const seed = { photos: [...LIBRARY_SEED_PHOTOS], redirects: [...LIBRARY_SEED_REDIRECTS] };
+    // First run — seed
+    const seed = {
+      photos: [...LIBRARY_SEED_PHOTOS],
+      redirectSets: JSON.parse(JSON.stringify(LIBRARY_SEED_REDIRECT_SETS))
+    };
     try { saveLibrary(seed); } catch {}
     return seed;
   }
+  // Normalize + migrate older formats
+  const photos = Array.isArray(lib.photos) ? lib.photos : [];
+  let redirectSets = lib.redirectSets && typeof lib.redirectSets === 'object' ? lib.redirectSets : null;
+  if (!redirectSets) {
+    // Migrate old flat `redirects` array → wrap into the default set
+    const oldFlat = Array.isArray(lib.redirects) ? lib.redirects : [];
+    redirectSets = { [DEFAULT_SET]: oldFlat, [SECOND_SET]: [] };
+  }
+  // Guarantee both default sets always exist
+  if (!Array.isArray(redirectSets[DEFAULT_SET])) redirectSets[DEFAULT_SET] = [];
+  if (!Array.isArray(redirectSets[SECOND_SET])) redirectSets[SECOND_SET] = [];
+  const normalized = { photos, redirectSets };
+  // Persist migration if shape changed
+  if (!lib.redirectSets) { try { saveLibrary(normalized); } catch {} }
+  return normalized;
 }
 function saveLibrary(lib) {
   fs.writeFileSync(LIBRARY_FILE, JSON.stringify(lib, null, 2));
+}
+// Return the list of set names (ordered, defaults first)
+function getSetNames(lib) {
+  lib = lib || loadLibrary();
+  const names = Object.keys(lib.redirectSets);
+  // Ensure default sets lead the list
+  const ordered = [DEFAULT_SET, SECOND_SET].filter(n => names.includes(n));
+  names.forEach(n => { if (!ordered.includes(n)) ordered.push(n); });
+  return ordered;
+}
+// Resolve which set a page uses (default if unset/invalid)
+function pageSet(page, lib) {
+  lib = lib || loadLibrary();
+  const s = page.redirectSet;
+  if (s && Array.isArray(lib.redirectSets[s])) return s;
+  return DEFAULT_SET;
 }
 
 // Pick a random item from arr that isn't `avoid` (when possible)
@@ -186,7 +225,8 @@ function pickRandom(arr, avoid) {
   return choices[Math.floor(Math.random() * choices.length)];
 }
 
-// Randomize one page's active photo + redirect from the shared library.
+// Randomize one page's active photo + redirect.
+// Photo comes from the shared photo pool; redirect comes from the page's assigned SET.
 // Honors "different from previous" by avoiding the page's last picks.
 // opts: { photo: true, redirect: true } — which to randomize (default both)
 function randomizePage(page, opts = {}) {
@@ -200,18 +240,21 @@ function randomizePage(page, opts = {}) {
     if (newPhoto) {
       updates.currentPhoto = newPhoto;
       updates.lastPhoto = newPhoto;
-      // Make sure it's in the page's own photo list too (so the gallery shows it)
       const photos = Array.isArray(page.photos) ? [...page.photos] : [];
       if (!photos.includes(newPhoto)) photos.unshift(newPhoto);
       updates.photos = photos;
     }
   }
 
-  if (doRedirect && lib.redirects.length) {
-    const newRedirect = pickRandom(lib.redirects, page.lastRedirect || page.whatsapp);
-    if (newRedirect) {
-      updates.whatsapp = newRedirect;
-      updates.lastRedirect = newRedirect;
+  if (doRedirect) {
+    const setName = pageSet(page, lib);
+    const pool = lib.redirectSets[setName] || [];
+    if (pool.length) {
+      const newRedirect = pickRandom(pool, page.lastRedirect || page.whatsapp);
+      if (newRedirect) {
+        updates.whatsapp = newRedirect;
+        updates.lastRedirect = newRedirect;
+      }
     }
   }
 
@@ -735,6 +778,9 @@ function renderAlerts(req) {
 function renderPageLibrarySection(page) {
   const lib = loadLibrary();
   const pid = esc(page.pageId);
+  const currentSet = pageSet(page, lib);
+  const setNames = getSetNames(lib);
+  const pool = lib.redirectSets[currentSet] || [];
 
   const photoThumbs = lib.photos.map((url, i) => {
     const active = url === page.currentPhoto;
@@ -745,7 +791,7 @@ function renderPageLibrarySection(page) {
     </a>`;
   }).join('');
 
-  const redirectBtns = lib.redirects.map((url, i) => {
+  const redirectBtns = pool.map((url, i) => {
     const active = url === page.whatsapp;
     const short = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
     return `<a href="/set-active-from-library?page=${pid}&redirectIndex=${i}" title="Set as active redirect" style="display:inline-flex;align-items:center;gap:4px;background:${active ? '#dcfce7' : '#fff'};border:1px solid ${active ? '#28a745' : '#e2e8f0'};border-radius:6px;padding:5px 9px;font-size:11px;font-family:monospace;text-decoration:none;color:${active ? '#166534' : '#475569'};">
@@ -753,9 +799,29 @@ function renderPageLibrarySection(page) {
     </a>`;
   }).join('');
 
+  // Set-assignment buttons (one per set)
+  const setButtons = setNames.map(name => {
+    const isCurrent = name === currentSet;
+    const count = (lib.redirectSets[name] || []).length;
+    return `<form action="/set-page-redirect-set?page=${pid}" method="POST" style="margin:0;display:inline;">
+      <input type="hidden" name="setName" value="${esc(name)}"/>
+      <button type="submit" class="btn" style="background:${isCurrent ? '#16a34a' : '#e2e8f0'};color:${isCurrent ? '#fff' : '#475569'};border:${isCurrent ? '2px solid #15803d' : '2px solid transparent'};">
+        ${isCurrent ? '✓ ' : ''}${esc(name)} (${count})
+      </button>
+    </form>`;
+  }).join('');
+
   return `
     <div class="card" style="border:2px solid #ede9fe;">
-      <h2>🎲 Quick Switch &amp; Randomize <span style="font-size:12px;font-weight:400;color:#8b5cf6;">— from shared library</span></h2>
+      <h2>🎲 Quick Switch &amp; Randomize <span style="font-size:12px;font-weight:400;color:#8b5cf6;">— photo pool shared · redirect by set</span></h2>
+
+      <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:12px;margin-bottom:16px;">
+        <div style="font-size:13px;font-weight:600;color:#065f46;margin-bottom:8px;">🌐 Redirect Set for this page — randomize pulls URLs ONLY from the selected set:</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${setButtons}
+        </div>
+        <div style="font-size:11px;color:#047857;margin-top:8px;">Currently using: <strong>${esc(currentSet)}</strong> — randomize + "tap a URL" below both use this set's URLs only.</div>
+      </div>
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
         <form action="/randomize-page?page=${pid}" method="POST" style="margin:0;">
@@ -778,17 +844,17 @@ function renderPageLibrarySection(page) {
         <div style="color:#6b21a8;">🔗 ${esc((page.whatsapp || '(none)').replace(/^https?:\/\//, ''))}</div>
       </div>
 
-      <h3 style="font-size:14px;color:#1a1d2e;margin:0 0 8px;">📸 Tap a photo to set active (${lib.photos.length})</h3>
+      <h3 style="font-size:14px;color:#1a1d2e;margin:0 0 8px;">📸 Tap a photo to set active (${lib.photos.length} — shared pool)</h3>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(85px,1fr));gap:8px;margin-bottom:16px;">
         ${photoThumbs || '<span style="color:#94a3b8;font-size:12px;">Library empty — add photos on the main dashboard.</span>'}
       </div>
 
-      <h3 style="font-size:14px;color:#1a1d2e;margin:0 0 8px;">🔗 Tap a URL to set active (${lib.redirects.length})</h3>
+      <h3 style="font-size:14px;color:#1a1d2e;margin:0 0 8px;">🔗 Tap a URL to set active — from "${esc(currentSet)}" set (${pool.length})</h3>
       <div style="display:flex;flex-wrap:wrap;gap:6px;">
-        ${redirectBtns || '<span style="color:#94a3b8;font-size:12px;">Library empty — add redirect URLs on the main dashboard.</span>'}
+        ${redirectBtns || '<span style="color:#94a3b8;font-size:12px;">This set is empty — add URLs to it on the main dashboard.</span>'}
       </div>
 
-      <div class="helper" style="margin-top:12px;">Changes here affect this page only. To edit the shared pool for all pages, use the 🗂️ Shared Library on the <a href="/?page=all">main dashboard</a>.</div>
+      <div class="helper" style="margin-top:12px;">Photos are shared by all pages. Redirect URLs come from this page's assigned set. To edit the pools, use the 🗂️ Shared Library on the <a href="/?page=all">main dashboard</a>.</div>
     </div>`;
 }
 
@@ -802,12 +868,30 @@ function renderLibraryManager() {
       <div style="font-size:9px;color:#94a3b8;text-align:center;padding:2px;">#${i + 1}</div>
     </div>`).join('');
 
-  const redirectChips = lib.redirects.map((url, i) => {
-    const short = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
-    return `<div style="display:inline-flex;align-items:center;gap:4px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:4px 8px;font-size:11px;font-family:monospace;">
-      <span style="color:#475569;">${esc(short)}</span>
-      <a href="/library-remove-redirect?index=${i}" onclick="return confirm('Remove this redirect URL from the shared library?')" style="color:#dc2626;text-decoration:none;font-weight:700;">×</a>
-    </div>`;
+  const setNames = getSetNames(lib);
+  // Build a section per redirect set
+  const setSections = setNames.map(name => {
+    const urls = lib.redirectSets[name] || [];
+    const chips = urls.map((url, i) => {
+      const short = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
+      return `<div style="display:inline-flex;align-items:center;gap:4px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:4px 8px;font-size:11px;font-family:monospace;">
+        <span style="color:#475569;">${esc(short)}</span>
+        <a href="/library-remove-redirect?set=${encodeURIComponent(name)}&index=${i}" onclick="return confirm('Remove this URL from the ${esc(name)} set?')" style="color:#dc2626;text-decoration:none;font-weight:700;">×</a>
+      </div>`;
+    }).join('');
+    const color = name === DEFAULT_SET ? '#3a8dde' : '#f59e0b';
+    return `
+      <div style="margin-top:14px;border:1px solid #e2e8f0;border-left:4px solid ${color};border-radius:8px;padding:12px;background:#fafbfc;">
+        <h4 style="margin:0 0 8px;font-size:13px;color:#1a1d2e;">🌐 ${esc(name)} <span style="font-weight:400;color:#94a3b8;">(${urls.length} URLs)</span></h4>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
+          ${chips || '<span style="color:#94a3b8;font-size:12px;">No URLs in this set yet.</span>'}
+        </div>
+        <form action="/library-add-redirect" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+          <input type="hidden" name="setName" value="${esc(name)}"/>
+          <textarea name="redirectUrls" placeholder="Paste URL(s) for ${esc(name)} (one per line or comma-separated)" style="flex:1;min-width:240px;min-height:44px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:monospace;font-size:12px;"></textarea>
+          <button type="submit" class="btn btn-green" style="white-space:nowrap;">+ Add to ${esc(name)}</button>
+        </form>
+      </div>`;
   }).join('');
 
   return `
@@ -829,14 +913,9 @@ function renderLibraryManager() {
       </div>
 
       <div style="margin-top:20px;border-top:1px solid #f1f5f9;padding-top:16px;">
-        <h3 style="margin:0 0 8px;font-size:14px;color:#1a1d2e;">🔗 Shared Redirect URLs (${lib.redirects.length})</h3>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
-          ${redirectChips || '<span style="color:#94a3b8;font-size:12px;">No redirect URLs yet.</span>'}
-        </div>
-        <form action="/library-add-redirect" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
-          <textarea name="redirectUrls" placeholder="Paste one or more redirect URLs (one per line or comma-separated)&#10;https://example.com/?p=12345" style="flex:1;min-width:260px;min-height:48px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:monospace;font-size:12px;"></textarea>
-          <button type="submit" class="btn btn-green" style="white-space:nowrap;">+ Add URL(s)</button>
-        </form>
+        <h3 style="margin:0 0 4px;font-size:14px;color:#1a1d2e;">🔗 Redirect Sets</h3>
+        <p style="font-size:12px;color:#6b7280;margin:0 0 4px;">Each page is assigned to ONE set. When randomizing, a page only picks URLs from its assigned set. Assign a page to a set on that page's dashboard.</p>
+        ${setSections}
       </div>
     </div>`;
 }
@@ -1589,26 +1668,41 @@ app.get('/library-remove-photo', (req, res) => {
   res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Photo removed from shared library'));
 });
 
-// Add one or more redirect URLs to the shared library
+// Add one or more redirect URLs to a specific SET
 app.post('/library-add-redirect', (req, res) => {
   const lib = loadLibrary();
+  const setName = req.body.setName && lib.redirectSets[req.body.setName] ? req.body.setName : DEFAULT_SET;
   const raw = req.body.redirectUrls || req.body.redirectUrl || '';
   const urls = raw.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
   let added = 0;
   urls.forEach(u => {
-    if (!lib.redirects.includes(u)) { lib.redirects.push(u); added++; }
+    if (!lib.redirectSets[setName].includes(u)) { lib.redirectSets[setName].push(u); added++; }
   });
   saveLibrary(lib);
-  res.redirect(`/?page=all&lib_msg=${encodeURIComponent('Added ' + added + ' redirect URL(s) to shared library')}`);
+  res.redirect(`/?page=all&lib_msg=${encodeURIComponent('Added ' + added + ' URL(s) to "' + setName + '" set')}`);
 });
 
-// Remove a redirect from the shared library
+// Remove a redirect from a specific SET
 app.get('/library-remove-redirect', (req, res) => {
   const lib = loadLibrary();
+  const setName = req.query.set && lib.redirectSets[req.query.set] ? req.query.set : DEFAULT_SET;
   const i = parseInt(req.query.index);
-  if (i >= 0 && i < lib.redirects.length) lib.redirects.splice(i, 1);
+  if (i >= 0 && i < lib.redirectSets[setName].length) lib.redirectSets[setName].splice(i, 1);
   saveLibrary(lib);
-  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Redirect URL removed from shared library'));
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('URL removed from "' + setName + '" set'));
+});
+
+// Assign a page to a redirect SET
+app.post('/set-page-redirect-set', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const lib = loadLibrary();
+  const setName = req.body.setName || req.query.set;
+  if (setName && lib.redirectSets[setName]) {
+    updatePage(pageId, { redirectSet: setName });
+  }
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
 });
 
 // ============================================
@@ -1633,10 +1727,12 @@ app.get('/set-active-from-library', (req, res) => {
     }
   }
   if (req.query.redirectIndex !== undefined) {
+    const setName = pageSet(page, lib);
+    const pool = lib.redirectSets[setName] || [];
     const i = parseInt(req.query.redirectIndex);
-    if (i >= 0 && i < lib.redirects.length) {
-      updates.whatsapp = lib.redirects[i];
-      updates.lastRedirect = lib.redirects[i];
+    if (i >= 0 && i < pool.length) {
+      updates.whatsapp = pool[i];
+      updates.lastRedirect = pool[i];
     }
   }
   if (Object.keys(updates).length) updatePage(pageId, updates);
@@ -1958,7 +2054,7 @@ cron.schedule('* * * * *', () => {
       let fresh = page;
       try {
         const lib = loadLibrary();
-        if (lib.photos.length || lib.redirects.length) {
+        if (lib.photos.length || Object.values(lib.redirectSets).some(a => a.length)) {
           fresh = randomizePage(page, {});
           console.log(`🎲 [${page.label}] Auto-randomized → photo=${(fresh.currentPhoto||'').split('/').pop()} redirect=${(fresh.whatsapp||'').replace(/^https?:\/\//,'')}`);
         }
