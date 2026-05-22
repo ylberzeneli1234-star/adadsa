@@ -1246,6 +1246,19 @@ function renderPageView(page, req) {
       </div>
     </div>
 
+    <div class="card" style="border:2px solid #fde68a;">
+      <h2>🔑 Page Settings <span style="font-size:12px;font-weight:400;color:#92400e;">— update token or label without losing fans/stats</span></h2>
+      <p style="color:#6b7280;font-size:13px;">Use this to fix an expired token (Facebook error code 190) or rename the page. Your fans, stats, photos, and history are all kept.</p>
+      <form action="/edit-page?page=${esc(page.pageId)}" method="POST">
+        <label>Page Access Token</label>
+        <input name="accessToken" placeholder="Paste new EAAxxx... token (leave blank to keep current)" style="font-family:monospace;font-size:12px;width:100%;"/>
+        <div class="helper" style="margin:4px 0 12px;">Current token: <code style="font-size:11px;">${page.accessToken ? esc(page.accessToken.slice(0, 12)) + '…' + esc(page.accessToken.slice(-6)) : '(none)'}</code></div>
+        <label>Page Label / Nickname</label>
+        <input name="label" value="${esc(page.label)}" style="width:100%;"/>
+        <button type="submit" class="btn btn-green" style="margin-top:12px;">🔑 Update Page Settings</button>
+      </form>
+    </div>
+
     <div class="card">
       <h2>📊 ${esc(page.label)} — Stats</h2>
       <div class="grid">
@@ -1691,6 +1704,27 @@ app.post('/update-settings', (req, res) => {
     currentPhoto: req.body.currentPhoto || undefined,
     label: req.body.label || undefined
   });
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// Edit page token + label without losing fans/stats/photos/history.
+app.post('/edit-page', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const updates = {};
+  // Only update token if a new one was actually pasted (don't wipe on blank)
+  if (req.body.accessToken && req.body.accessToken.trim()) {
+    updates.accessToken = req.body.accessToken.trim();
+  }
+  if (req.body.label && req.body.label.trim()) {
+    updates.label = req.body.label.trim();
+  }
+  updatePage(pageId, updates);
+  // Re-subscribe messenger profile with the (possibly new) token so the page works immediately
+  if (updates.accessToken) {
+    try { setupMessenger(getPage(pageId)); } catch {}
+  }
   res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
 });
 
