@@ -1014,6 +1014,7 @@ function renderAllPagesView(pages, req) {
       <td>${clicksToday} / ${clicks}</td>
       <td>${sent} ✅ · ${failed} ❌</td>
       <td>${status}<br/>${sendNowBadge}</td>
+      <td><span class="bp-cell" data-bp="${esc(p.pageId)}" style="font-size:12px;color:#94a3b8;">—</span></td>
       <td>
         <div class="actions">
           ${pauseBtn}
@@ -1088,11 +1089,39 @@ function renderAllPagesView(pages, req) {
             <span style="font-size:11px;color:#6b7280;margin-left:8px;display:block;width:100%;">— useful before deploying code changes</span>
           </div>
           <table>
-            <thead><tr><th>Page</th><th>Fans</th><th>Clicks (today / total)</th><th>Messages</th><th>Status</th><th>Quick actions</th></tr></thead>
+            <thead><tr><th>Page</th><th>Fans</th><th>Clicks (today / total)</th><th>Messages</th><th>Status</th><th>Send Progress</th><th>Quick actions</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>`
       }
     </div>
+
+    <script>
+      (function() {
+        function fmtTime(s){ var m=Math.floor(s/60), sec=s%60; return m>0?(m+'m'):(sec+'s'); }
+        function pollAll() {
+          var cells = document.querySelectorAll('.bp-cell');
+          cells.forEach(function(cell) {
+            var pid = cell.getAttribute('data-bp');
+            fetch('/broadcast-status?page=' + encodeURIComponent(pid))
+              .then(function(r){ return r.json(); })
+              .then(function(d){
+                if (!d.active) { cell.innerHTML = '<span style="color:#cbd5e1;">— idle</span>'; return; }
+                if (d.status === 'complete') {
+                  cell.innerHTML = '<span style="color:#16a34a;font-weight:600;">✅ Done</span><br/><span style="font-size:10px;color:#6b7280;">' + d.total + ' sent</span>';
+                } else {
+                  var pct = d.total > 0 ? Math.round(d.done / d.total * 100) : 100;
+                  cell.innerHTML = '<span style="color:#6366f1;font-weight:600;">📡 ' + pct + '%</span><br/>'
+                    + '<span style="font-size:10px;color:#6b7280;">' + d.done + '/' + d.total + '</span>'
+                    + '<div style="background:#e2e8f0;border-radius:999px;height:5px;margin-top:3px;overflow:hidden;"><div style="background:#6366f1;height:100%;width:' + pct + '%;"></div></div>';
+                }
+              })
+              .catch(function(){});
+          });
+        }
+        pollAll();
+        setInterval(pollAll, 5000);
+      })();
+    </script>
 
     ${renderLibraryManager()}
 
