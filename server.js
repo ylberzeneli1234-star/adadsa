@@ -569,11 +569,39 @@ function sendCard(page, psid, opts = {}) {
   });
 }
 
+// ============================================
+// BROADCAST PROGRESS TRACKER (in-memory only)
+// Tracks live progress + completion per page. Resets on redeploy (so does the broadcast).
+// ============================================
+const broadcastProgress = {}; // pageId -> { total, done, failed, startedAt, finishedAt, type, status }
+
+function startBroadcastTracking(pageId, total, type) {
+  broadcastProgress[pageId] = {
+    total, done: 0, failed: 0,
+    startedAt: Date.now(), finishedAt: null,
+    type, status: total > 0 ? 'running' : 'complete'
+  };
+  if (total === 0) broadcastProgress[pageId].finishedAt = Date.now();
+}
+function tickBroadcast(pageId) {
+  const b = broadcastProgress[pageId];
+  if (!b) return;
+  b.done++;
+  if (b.done >= b.total) {
+    b.status = 'complete';
+    b.finishedAt = Date.now();
+  }
+}
+
 function broadcastToPage(page, opts = {}) {
   const fans = loadFans(page.pageId);
   const spacing = (page.spacingSeconds || 10) * 1000;
+  startBroadcastTracking(page.pageId, fans.length, 'card');
   fans.forEach((psid, i) => {
-    setTimeout(() => sendCard(page, psid, opts), i * spacing);
+    setTimeout(async () => {
+      try { await sendCard(page, psid, opts); } catch {}
+      tickBroadcast(page.pageId);
+    }, i * spacing);
   });
   return fans.length;
 }
@@ -619,8 +647,12 @@ function sendText(page, psid, text, opts = {}) {
 function broadcastTextToPage(page, text, opts = {}) {
   const fans = loadFans(page.pageId);
   const spacing = (page.spacingSeconds || 10) * 1000;
+  startBroadcastTracking(page.pageId, fans.length, 'text');
   fans.forEach((psid, i) => {
-    setTimeout(() => sendText(page, psid, text, opts), i * spacing);
+    setTimeout(async () => {
+      try { await sendText(page, psid, text, opts); } catch {}
+      tickBroadcast(page.pageId);
+    }, i * spacing);
   });
   return fans.length;
 }
@@ -758,6 +790,10 @@ const CSS = `
   .alert-success { background: #d4edda; color: #155724; }
   .alert-error { background: #f8d7da; color: #721c24; }
   .helper { font-size: 12px; color: #6b7280; margin-top: 4px; }
+  details > summary { list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details[open] > summary .bp-arrow { transform: rotate(90deg); }
+  details > summary:hover { background: #fffbeb; }
   details { margin: 10px 0; }
   summary { cursor: pointer; font-weight: 600; color: #4a5568; padding: 6px 0; }
 `;
@@ -1246,20 +1282,71 @@ function renderPageView(page, req) {
       </div>
     </div>
 
-    <div class="card" style="border:2px solid #fde68a;">
-      <h2>🔑 Page Settings <span style="font-size:12px;font-weight:400;color:#92400e;">— update token or label without losing fans/stats</span></h2>
-      <p style="color:#6b7280;font-size:13px;">Use this to fix an expired token (Facebook error code 190) or rename the page. Your fans, stats, photos, and history are all kept.</p>
-      <label>Page ID</label>
-      <input value="${esc(page.pageId)}" readonly onclick="this.select();" style="font-family:monospace;font-size:12px;width:100%;background:#f8fafc;cursor:pointer;" title="Click to select / copy"/>
-      <div class="helper" style="margin:4px 0 12px;">This is fixed — it identifies the Facebook page. Click to copy.</div>
-      <form action="/edit-page?page=${esc(page.pageId)}" method="POST">
-        <label>Page Access Token</label>
-        <input name="accessToken" placeholder="Paste new EAAxxx... token (leave blank to keep current)" style="font-family:monospace;font-size:12px;width:100%;"/>
-        <div class="helper" style="margin:4px 0 12px;">Current token: <code style="font-size:11px;">${page.accessToken ? esc(page.accessToken.slice(0, 12)) + '…' + esc(page.accessToken.slice(-6)) : '(none)'}</code></div>
-        <label>Page Label / Nickname</label>
-        <input name="label" value="${esc(page.label)}" style="width:100%;"/>
-        <button type="submit" class="btn btn-green" style="margin-top:12px;">🔑 Update Page Settings</button>
-      </form>
+    <div class="card" id="broadcast-progress-card" style="display:none;border:2px solid #c7d2fe;">
+      <h2>📡 Broadcast Progress</h2>
+      <div>
+        <div style="font-size:15px;font-weight:600;color:#1a1d2e;" id="bp-headline">—</div>
+        <div style="background:#e2e8f0;border-radius:999px;height:14px;overflow:hidden;margin:10px 0;">
+          <div id="bp-bar" style="background:#6366f1;height:100%;width:0%;transition:width 0.4s;"></div>
+        </div>
+        <div style="font-size:13px;color:#6b7280;" id="bp-detail">—</div>
+      </div>
+    </div>
+    <script>
+      (function() {
+        var pid = ${JSON.stringify(page.pageId)};
+        var card = document.getElementById('broadcast-progress-card');
+        var headline = document.getElementById('bp-headline');
+        var bar = document.getElementById('bp-bar');
+        var detail = document.getElementById('bp-detail');
+        function fmtTime(s){ var m=Math.floor(s/60), sec=s%60; return m>0?(m+'m '+sec+'s'):(sec+'s'); }
+        function poll() {
+          fetch('/broadcast-status?page=' + encodeURIComponent(pid))
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+              if (!d.active) { card.style.display='none'; return; }
+              card.style.display='block';
+              var pct = d.total > 0 ? Math.round(d.done / d.total * 100) : 100;
+              bar.style.width = pct + '%';
+              if (d.status === 'complete') {
+                bar.style.background = '#22c55e';
+                headline.innerHTML = '✅ Broadcast complete — all ' + d.total + ' fans done';
+                detail.textContent = 'Sent ' + d.done + ' messages in ' + fmtTime(d.elapsedSec) + '. (' + (d.type === 'text' ? 'plain text' : 'photo card') + ')';
+              } else {
+                bar.style.background = '#6366f1';
+                headline.innerHTML = '📡 Sending… ' + d.done + ' / ' + d.total + ' (' + pct + '%)';
+                detail.textContent = d.remaining + ' fans remaining · running ' + fmtTime(d.elapsedSec);
+              }
+            })
+            .catch(function(){});
+        }
+        poll();
+        setInterval(poll, 5000);
+      })();
+    </script>
+
+    <div class="card" style="border:2px solid #fde68a;padding:0;overflow:hidden;">
+      <details>
+        <summary style="cursor:pointer;padding:16px 20px;list-style:none;display:flex;align-items:center;gap:10px;user-select:none;">
+          <span style="font-size:13px;color:#92400e;transition:transform 0.2s;display:inline-block;" class="bp-arrow">▶</span>
+          <span style="font-size:18px;font-weight:700;color:#1a1d2e;">🔑 Page Settings</span>
+          <span style="font-size:12px;color:#6b7280;font-family:monospace;margin-left:auto;">ID: ${esc(page.pageId)} · ${esc(page.label)}</span>
+        </summary>
+        <div style="padding:0 20px 20px;">
+          <p style="color:#6b7280;font-size:13px;">Update token (fix Facebook error code 190) or rename the page. Fans, stats, photos, and history are all kept.</p>
+          <label>Page ID</label>
+          <input value="${esc(page.pageId)}" readonly onclick="this.select();" style="font-family:monospace;font-size:12px;width:100%;background:#f8fafc;cursor:pointer;" title="Click to select / copy"/>
+          <div class="helper" style="margin:4px 0 12px;">This is fixed — it identifies the Facebook page. Click to copy.</div>
+          <form action="/edit-page?page=${esc(page.pageId)}" method="POST">
+            <label>Page Access Token</label>
+            <input name="accessToken" placeholder="Paste new EAAxxx... token (leave blank to keep current)" style="font-family:monospace;font-size:12px;width:100%;"/>
+            <div class="helper" style="margin:4px 0 12px;">Current token: <code style="font-size:11px;">${page.accessToken ? esc(page.accessToken.slice(0, 12)) + '…' + esc(page.accessToken.slice(-6)) : '(none)'}</code></div>
+            <label>Page Label / Nickname</label>
+            <input name="label" value="${esc(page.label)}" style="width:100%;"/>
+            <button type="submit" class="btn btn-green" style="margin-top:12px;">🔑 Update Page Settings</button>
+          </form>
+        </div>
+      </details>
     </div>
 
     <div class="card">
@@ -1729,6 +1816,23 @@ app.post('/edit-page', (req, res) => {
     try { setupMessenger(getPage(pageId)); } catch {}
   }
   res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// Live broadcast progress (polled by the dashboard widget)
+app.get('/broadcast-status', (req, res) => {
+  const pageId = req.query.page;
+  const b = broadcastProgress[pageId];
+  if (!b) return res.json({ active: false });
+  const elapsed = (b.finishedAt || Date.now()) - b.startedAt;
+  res.json({
+    active: true,
+    status: b.status,
+    total: b.total,
+    done: b.done,
+    remaining: Math.max(0, b.total - b.done),
+    type: b.type,
+    elapsedSec: Math.round(elapsed / 1000)
+  });
 });
 
 app.post('/update-schedule', (req, res) => {
