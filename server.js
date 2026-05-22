@@ -1249,6 +1249,9 @@ function renderPageView(page, req) {
     <div class="card" style="border:2px solid #fde68a;">
       <h2>🔑 Page Settings <span style="font-size:12px;font-weight:400;color:#92400e;">— update token or label without losing fans/stats</span></h2>
       <p style="color:#6b7280;font-size:13px;">Use this to fix an expired token (Facebook error code 190) or rename the page. Your fans, stats, photos, and history are all kept.</p>
+      <label>Page ID</label>
+      <input value="${esc(page.pageId)}" readonly onclick="this.select();" style="font-family:monospace;font-size:12px;width:100%;background:#f8fafc;cursor:pointer;" title="Click to select / copy"/>
+      <div class="helper" style="margin:4px 0 12px;">This is fixed — it identifies the Facebook page. Click to copy.</div>
       <form action="/edit-page?page=${esc(page.pageId)}" method="POST">
         <label>Page Access Token</label>
         <input name="accessToken" placeholder="Paste new EAAxxx... token (leave blank to keep current)" style="font-family:monospace;font-size:12px;width:100%;"/>
