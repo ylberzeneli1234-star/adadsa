@@ -1012,7 +1012,7 @@ function renderAllPagesView(pages, req) {
       <td><strong>${esc(p.label)}</strong><br/><span style="font-size:11px;color:#6b7280;">${esc(p.pageId)}</span></td>
       <td>${fans.length}</td>
       <td>${clicksToday} / ${clicks}</td>
-      <td>${sent} ✅ · ${failed} ❌</td>
+      <td style="white-space:nowrap;font-size:13px;">${sent} ✅ · ${failed} ❌</td>
       <td>${status}<br/>${sendNowBadge}</td>
       <td><span class="bp-cell" data-bp="${esc(p.pageId)}" style="font-size:12px;color:#94a3b8;">—</span></td>
       <td>
