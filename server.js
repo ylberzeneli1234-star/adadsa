@@ -122,6 +122,29 @@ function removePage(pageId) {
 // ============================================
 const LIBRARY_FILE = `${DATA_DIR}/library.json`;
 
+// ============================================
+// GLOBAL SETTINGS (settings.json) — small key/value store
+// ============================================
+const SETTINGS_FILE = `${DATA_DIR}/settings.json`;
+function loadSettings() {
+  try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); }
+  catch { return { contentMode: 'classic' }; } // default: classic
+}
+function saveSettings(s) { fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2)); }
+function getGlobalContentMode() {
+  const s = loadSettings();
+  return s.contentMode === 'templates' ? 'templates' : 'classic';
+}
+// Resolve a page's effective content mode: page override, else global default.
+// page.contentMode can be 'classic', 'templates', or undefined/'global' (use global).
+function pageContentMode(page) {
+  if (page && (page.contentMode === 'classic' || page.contentMode === 'templates')) {
+    return page.contentMode;
+  }
+  return getGlobalContentMode();
+}
+
+
 const LIBRARY_SEED_PHOTOS = [
   'https://i.imgur.com/HeeRTyc.png',
   'https://i.imgur.com/2MOgc8a.png',
@@ -195,7 +218,8 @@ function loadLibrary() {
     // First run — seed
     const seed = {
       photos: [...LIBRARY_SEED_PHOTOS],
-      redirectSets: JSON.parse(JSON.stringify(LIBRARY_SEED_REDIRECT_SETS))
+      redirectSets: JSON.parse(JSON.stringify(LIBRARY_SEED_REDIRECT_SETS)),
+      cardTemplates: []
     };
     try { saveLibrary(seed); } catch {}
     return seed;
@@ -211,9 +235,10 @@ function loadLibrary() {
   // Guarantee both default sets always exist
   if (!Array.isArray(redirectSets[DEFAULT_SET])) redirectSets[DEFAULT_SET] = [];
   if (!Array.isArray(redirectSets[SECOND_SET])) redirectSets[SECOND_SET] = [];
-  const normalized = { photos, redirectSets };
+  const cardTemplates = Array.isArray(lib.cardTemplates) ? lib.cardTemplates : [];
+  const normalized = { photos, redirectSets, cardTemplates };
   // Persist migration if shape changed
-  if (!lib.redirectSets) { try { saveLibrary(normalized); } catch {} }
+  if (!lib.redirectSets || !lib.cardTemplates) { try { saveLibrary(normalized); } catch {} }
   return normalized;
 }
 function saveLibrary(lib) {
@@ -245,16 +270,46 @@ function pickRandom(arr, avoid) {
   return choices[Math.floor(Math.random() * choices.length)];
 }
 
-// Randomize one page's active photo + redirect.
-// Photo comes from the shared photo pool; redirect comes from the page's assigned SET.
-// Honors "different from previous" by avoiding the page's last picks.
+// Templates tagged for a given set
+function templatesForSet(lib, setName) {
+  lib = lib || loadLibrary();
+  return (lib.cardTemplates || []).filter(t => (t.set || DEFAULT_SET) === setName);
+}
+
+// Randomize one page. If card templates exist for the page's set, pick a COMPLETE
+// template (photo + title + subtitle + redirect + button together). Otherwise fall
+// back to loose photo pool + redirect set. Honors "different from previous".
 // opts: { photo: true, redirect: true } — which to randomize (default both)
 function randomizePage(page, opts = {}) {
   const doPhoto = opts.photo !== false;
   const doRedirect = opts.redirect !== false;
   const lib = loadLibrary();
-  const updates = {};
+  const setName = pageSet(page, lib);
+  const tmpls = templatesForSet(lib, setName);
 
+  // TEMPLATE MODE: only if this page's content mode is 'templates' AND a full randomize
+  const mode = pageContentMode(page);
+  if (mode === 'templates' && tmpls.length && doPhoto && doRedirect) {
+    const chosen = pickRandom(tmpls, (lib.cardTemplates || []).find(t => t.id === page.lastTemplateId));
+    if (chosen) {
+      const photos = Array.isArray(page.photos) ? [...page.photos] : [];
+      if (chosen.photo && !photos.includes(chosen.photo)) photos.unshift(chosen.photo);
+      return updatePage(page.pageId, {
+        currentPhoto: chosen.photo || page.currentPhoto,
+        title: chosen.title || page.title,
+        subtitle: chosen.subtitle || page.subtitle,
+        buttonText: chosen.buttonText || page.buttonText,
+        whatsapp: chosen.redirect || page.whatsapp,
+        lastPhoto: chosen.photo,
+        lastRedirect: chosen.redirect,
+        lastTemplateId: chosen.id,
+        photos
+      });
+    }
+  }
+
+  // FALLBACK MODE: loose photo pool + redirect set (no templates, or partial randomize)
+  const updates = {};
   if (doPhoto && lib.photos.length) {
     const newPhoto = pickRandom(lib.photos, page.lastPhoto || page.currentPhoto);
     if (newPhoto) {
@@ -265,9 +320,7 @@ function randomizePage(page, opts = {}) {
       updates.photos = photos;
     }
   }
-
   if (doRedirect) {
-    const setName = pageSet(page, lib);
     const pool = lib.redirectSets[setName] || [];
     if (pool.length) {
       const newRedirect = pickRandom(pool, page.lastRedirect || page.whatsapp);
@@ -277,7 +330,6 @@ function randomizePage(page, opts = {}) {
       }
     }
   }
-
   if (Object.keys(updates).length) {
     return updatePage(page.pageId, updates);
   }
@@ -811,6 +863,7 @@ function renderTopbar(pages, selectedPageId) {
     <form method="GET" action="/" style="margin:0;">
       <select name="page" onchange="this.form.submit()">
         <option value="all" ${!selectedPageId || selectedPageId === 'all' ? 'selected' : ''}>🌍 All Pages (aggregate)</option>
+        <option value="templates" ${selectedPageId === 'templates' ? 'selected' : ''}>🎴 Card Templates</option>
         ${opts}
       </select>
     </form>
@@ -880,6 +933,21 @@ function renderPageLibrarySection(page) {
       </div>
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+        ${(function(){
+          var mode = pageContentMode(page);
+          if (mode === 'templates') {
+            var tcount = templatesForSet(loadLibrary(), currentSet).length;
+            return `
+        <div style="width:100%;font-size:12px;color:#7c3aed;margin-bottom:4px;">🎴 This page is in <strong>Templates</strong> mode — randomize picks a complete card from the ${esc(currentSet)} set (${tcount} templates).</div>
+        <form action="/randomize-page?page=${pid}" method="POST" style="margin:0;">
+          <button type="submit" class="btn" style="background:#8b5cf6;color:#fff;">🎴 Pick Random Template</button>
+        </form>
+        <form action="/randomize-and-send?page=${pid}" method="POST" style="margin:0;">
+          <button type="submit" class="btn" style="background:#7c3aed;color:#fff;" onclick="return confirm('Pick a random template, then immediately broadcast to all fans?')">🎴🚀 Random Template + Send</button>
+        </form>`;
+          }
+          return `
+        <div style="width:100%;font-size:12px;color:#6366f1;margin-bottom:4px;">📷 This page is in <strong>Classic</strong> mode — randomize picks a photo from the shared pool + a URL from the ${esc(currentSet)} set.</div>
         <form action="/randomize-page?page=${pid}" method="POST" style="margin:0;">
           <button type="submit" class="btn" style="background:#8b5cf6;color:#fff;">🎲 Randomize (Photo + URL)</button>
         </form>
@@ -891,7 +959,8 @@ function renderPageLibrarySection(page) {
         </form>
         <form action="/randomize-and-send?page=${pid}" method="POST" style="margin:0;">
           <button type="submit" class="btn" style="background:#7c3aed;color:#fff;" onclick="return confirm('Randomize photo + URL, then immediately broadcast to all fans?')">🎲🚀 Randomize + Send</button>
-        </form>
+        </form>`;
+        })()}
       </div>
 
       <div style="background:#faf5ff;border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px;">
@@ -976,8 +1045,124 @@ function renderLibraryManager() {
     </div>`;
 }
 
+function renderTemplateManager(req) {
+  const lib = loadLibrary();
+  const setNames = getSetNames(lib);
+  const templates = lib.cardTemplates || [];
+
+  const setOptions = setNames.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+
+  // Group templates by set for display
+  const sections = setNames.map(setName => {
+    const list = templates.filter(t => (t.set || DEFAULT_SET) === setName);
+    const color = setName === DEFAULT_SET ? '#3a8dde' : '#f59e0b';
+    const cards = list.map(t => `
+      <div style="border:1px solid #e2e8f0;border-left:4px solid ${color};border-radius:8px;padding:12px;display:flex;gap:12px;align-items:flex-start;background:#fff;">
+        <img src="${esc(t.photo)}" style="width:64px;height:64px;object-fit:cover;border-radius:6px;flex-shrink:0;" onerror="this.style.display='none';"/>
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:600;font-size:14px;color:#1a1d2e;">${esc(t.title || '(no title)')}</div>
+          <div style="font-size:12px;color:#6b7280;margin:2px 0;">${esc(t.subtitle || '(no subtitle)')}</div>
+          <div style="font-size:11px;color:#94a3b8;font-family:monospace;">🔘 ${esc(t.buttonText)} · 🔗 ${esc((t.redirect || '(no redirect)').replace(/^https?:\/\//, ''))}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <button onclick="editTmpl('${t.id}')" class="qbtn" style="background:#6366f1;">✏️ Edit</button>
+          <a href="/template-delete?id=${t.id}" onclick="return confirm('Delete this template?')" class="qbtn" style="background:#dc2626;">🗑️</a>
+        </div>
+      </div>
+      <script>window.__t_${t.id} = ${JSON.stringify(t)};</script>`).join('');
+
+    return `
+      <div style="margin-top:18px;">
+        <h3 style="font-size:15px;color:#1a1d2e;margin:0 0 4px;border-left:4px solid ${color};padding-left:8px;">🌐 ${esc(setName)} templates <span style="font-weight:400;color:#94a3b8;">(${list.length})</span></h3>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+          ${cards || '<span style="color:#94a3b8;font-size:13px;padding:8px;">No templates for ' + esc(setName) + ' yet. Add one below.</span>'}
+        </div>
+      </div>`;
+  }).join('');
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+
+    <div class="card">
+      <h2>🎴 Card Templates <span style="font-size:13px;font-weight:400;color:#6b7280;">— complete cards (photo + title + subtitle + redirect), rotated daily</span></h2>
+      <p style="color:#6b7280;font-size:13px;">Build complete card templates here. Each one bundles a photo, title, subtitle, button, and redirect URL together — tagged for a website. Pages assigned to <strong>Scrollgallery</strong> rotate through Scrollgallery templates; pages on <strong>TheViralBox</strong> rotate through TheViralBox templates. When a page randomizes or sends its daily broadcast, it picks one complete template (different from its last).</p>
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 14px;font-size:13px;color:#1e40af;margin-top:10px;">
+        <strong>Total: ${templates.length} templates</strong> · Scrollgallery: ${templates.filter(t => (t.set||DEFAULT_SET)===DEFAULT_SET).length} · TheViralBox: ${templates.filter(t => t.set===SECOND_SET).length}
+      </div>
+    </div>
+
+    <div class="card" style="border:2px solid #c7d2fe;">
+      <h2 id="form-title">➕ Add New Template</h2>
+      <form action="/template-add" method="POST" id="tmpl-form">
+        <input type="hidden" name="id" id="f-id" value=""/>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div>
+            <label>Card Title (the name)</label>
+            <input name="title" id="f-title" placeholder="e.g. Elizabeth 56 💕" style="width:100%;"/>
+          </div>
+          <div>
+            <label>Website</label>
+            <select name="set" id="f-set" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;">${setOptions}</select>
+          </div>
+        </div>
+        <label style="margin-top:10px;display:block;">Card Subtitle</label>
+        <input name="subtitle" id="f-subtitle" placeholder="e.g. You just seem like someone interesting, and I'd love to say hello." style="width:100%;"/>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;">
+          <div>
+            <label>Photo URL</label>
+            <input name="photo" id="f-photo" placeholder="https://i.imgur.com/xxxxx.png" style="width:100%;font-family:monospace;font-size:12px;" required/>
+          </div>
+          <div>
+            <label>Button Text</label>
+            <input name="buttonText" id="f-button" placeholder="My Photos 📞" style="width:100%;"/>
+          </div>
+        </div>
+        <label style="margin-top:10px;display:block;">Redirect URL</label>
+        <input name="redirect" id="f-redirect" placeholder="https://scrollgallery.com/?p=50328" style="width:100%;font-family:monospace;font-size:12px;"/>
+        <div style="margin-top:14px;display:flex;gap:8px;">
+          <button type="submit" class="btn btn-green" id="f-submit">➕ Add Template</button>
+          <button type="button" onclick="resetForm()" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="f-cancel">Cancel Edit</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>📋 Existing Templates</h2>
+      ${sections}
+    </div>
+
+    <script>
+      function editTmpl(id) {
+        var t = window['__t_' + id];
+        if (!t) return;
+        document.getElementById('f-id').value = t.id;
+        document.getElementById('f-title').value = t.title || '';
+        document.getElementById('f-subtitle').value = t.subtitle || '';
+        document.getElementById('f-photo').value = t.photo || '';
+        document.getElementById('f-button').value = t.buttonText || '';
+        document.getElementById('f-redirect').value = t.redirect || '';
+        document.getElementById('f-set').value = t.set || '${DEFAULT_SET}';
+        document.getElementById('tmpl-form').action = '/template-edit';
+        document.getElementById('form-title').textContent = '✏️ Edit Template';
+        document.getElementById('f-submit').textContent = '💾 Save Changes';
+        document.getElementById('f-cancel').style.display = 'inline-block';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+      function resetForm() {
+        document.getElementById('tmpl-form').reset();
+        document.getElementById('f-id').value = '';
+        document.getElementById('tmpl-form').action = '/template-add';
+        document.getElementById('form-title').textContent = '➕ Add New Template';
+        document.getElementById('f-submit').textContent = '➕ Add Template';
+        document.getElementById('f-cancel').style.display = 'none';
+      }
+    </script>
+  </div>`;
+}
+
 function renderAllPagesView(pages, req) {
   const todayStr = new Date().toISOString().split('T')[0];
+  const globalMode = getGlobalContentMode();
   let agg = { fans: 0, clicks: 0, clicksToday: 0, sent: 0, failed: 0, delivered: 0, readers: 0 };
   const rows = pages.map(p => {
     const fans = loadFans(p.pageId);
@@ -1014,6 +1199,15 @@ function renderAllPagesView(pages, req) {
       <td>${clicksToday} / ${clicks}</td>
       <td style="white-space:nowrap;font-size:13px;">${sent} ✅ · ${failed} ❌</td>
       <td>${status}<br/>${sendNowBadge}</td>
+      <td style="font-size:11px;">${(function(){
+        var eff = (p.contentMode === 'classic' || p.contentMode === 'templates') ? p.contentMode : globalMode;
+        var isOverride = (p.contentMode === 'classic' || p.contentMode === 'templates');
+        var badge = eff === 'templates'
+          ? '<span style="color:#7c3aed;font-weight:600;">🎴 Templates</span>'
+          : '<span style="color:#0c447c;font-weight:600;">📷 Classic</span>';
+        var sub = isOverride ? '<span style="color:#94a3b8;font-size:10px;">(page set)</span>' : '<span style="color:#94a3b8;font-size:10px;">(global)</span>';
+        return badge + '<br/>' + sub;
+      })()}</td>
       <td><span class="bp-cell" data-bp="${esc(p.pageId)}" style="font-size:12px;color:#94a3b8;">—</span></td>
       <td>
         <div class="actions">
@@ -1088,8 +1282,20 @@ function renderAllPagesView(pages, req) {
             </form>
             <span style="font-size:11px;color:#6b7280;margin-left:8px;display:block;width:100%;">— useful before deploying code changes</span>
           </div>
+          <div style="margin-bottom:12px;padding:12px;background:#faf5ff;border:2px solid #e9d5ff;border-radius:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+            <span style="font-size:13px;font-weight:700;color:#6b21a8;">🎚️ Global Content Mode:</span>
+            <form action="/set-global-mode" method="POST" style="margin:0;display:inline;">
+              <input type="hidden" name="mode" value="classic"/>
+              <button type="submit" class="qbtn" style="background:${globalMode === 'classic' ? '#16a34a' : '#cbd5e1'};color:${globalMode === 'classic' ? '#fff' : '#475569'};">${globalMode === 'classic' ? '✓ ' : ''}📷 Classic (photo + URL)</button>
+            </form>
+            <form action="/set-global-mode" method="POST" style="margin:0;display:inline;">
+              <input type="hidden" name="mode" value="templates"/>
+              <button type="submit" class="qbtn" style="background:${globalMode === 'templates' ? '#16a34a' : '#cbd5e1'};color:${globalMode === 'templates' ? '#fff' : '#475569'};">${globalMode === 'templates' ? '✓ ' : ''}🎴 Templates (complete cards)</button>
+            </form>
+            <span style="font-size:11px;color:#7c3aed;margin-left:4px;">Default for pages set to "Global". Each page can override below.</span>
+          </div>
           <table>
-            <thead><tr><th>Page</th><th>Fans</th><th>Clicks (today / total)</th><th>Messages</th><th>Status</th><th>Send Progress</th><th>Quick actions</th></tr></thead>
+            <thead><tr><th>Page</th><th>Fans</th><th>Clicks (today / total)</th><th>Messages</th><th>Status</th><th>Mode</th><th>Send Progress</th><th>Quick actions</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>`
       }
@@ -1310,6 +1516,32 @@ function renderPageView(page, req) {
         </form>
       </div>
     </div>
+
+    ${(function(){
+      var gMode = getGlobalContentMode();
+      var pMode = page.contentMode;
+      var isClassic = pMode === 'classic';
+      var isTemplates = pMode === 'templates';
+      var isGlobal = !isClassic && !isTemplates;
+      var effective = isGlobal ? gMode : pMode;
+      return `
+    <div class="card" style="border:2px solid #e9d5ff;">
+      <h2>🎚️ Content Mode <span style="font-size:12px;font-weight:400;color:#7c3aed;">— what this page sends when randomized/broadcast</span></h2>
+      <p style="color:#6b7280;font-size:13px;">Effective mode right now: <strong style="color:${effective === 'templates' ? '#7c3aed' : '#0c447c'};">${effective === 'templates' ? '🎴 Templates (complete cards)' : '📷 Classic (random photo + URL)'}</strong></p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+        <form action="/set-page-mode?page=${esc(page.pageId)}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="classic"/>
+          <button type="submit" class="btn" style="background:${isClassic ? '#16a34a' : '#e2e8f0'};color:${isClassic ? '#fff' : '#475569'};">${isClassic ? '✓ ' : ''}📷 Classic</button>
+        </form>
+        <form action="/set-page-mode?page=${esc(page.pageId)}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="templates"/>
+          <button type="submit" class="btn" style="background:${isTemplates ? '#16a34a' : '#e2e8f0'};color:${isTemplates ? '#fff' : '#475569'};">${isTemplates ? '✓ ' : ''}🎴 Templates</button>
+        </form>
+        <form action="/set-page-mode?page=${esc(page.pageId)}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="global"/>
+          <button type="submit" class="btn" style="background:${isGlobal ? '#16a34a' : '#e2e8f0'};color:${isGlobal ? '#fff' : '#475569'};">${isGlobal ? '✓ ' : ''}🌐 Use Global (${gMode})</button>
+        </form>
+      </div>
+      <div class="helper" style="margin-top:10px;">📷 Classic = random photo from shared pool + random URL from this page's set. 🎴 Templates = random complete card from this page's set templates. 🌐 Global follows the main dashboard's setting (currently <strong>${gMode}</strong>).</div>
+    </div>`;
+    })()}
 
     <div class="card" id="broadcast-progress-card" style="display:none;border:2px solid #c7d2fe;">
       <h2>📡 Broadcast Progress</h2>
@@ -1662,7 +1894,9 @@ app.get('/', (req, res) => {
   const showAll = !selectedPageId || selectedPageId === 'all';
   let html = renderHead('messagebot');
   html += renderTopbar(pages, selectedPageId);
-  if (showAll) {
+  if (selectedPageId === 'templates') {
+    html += renderTemplateManager(req);
+  } else if (showAll) {
     html += renderAllPagesView(pages, req);
   } else {
     const page = getPage(selectedPageId);
@@ -1984,6 +2218,80 @@ app.post('/set-page-redirect-set', (req, res) => {
     updatePage(pageId, { redirectSet: setName });
   }
   res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// ============================================
+// CARD TEMPLATES (create/edit/delete on the Templates page)
+// ============================================
+app.post('/template-add', (req, res) => {
+  const lib = loadLibrary();
+  const b = req.body;
+  if (!b.photo || !b.photo.trim()) {
+    return res.redirect('/?page=templates&error=' + encodeURIComponent('Photo URL is required'));
+  }
+  const setName = (b.set && lib.redirectSets[b.set]) ? b.set : DEFAULT_SET;
+  const tmpl = {
+    id: 't' + Date.now() + Math.floor(Math.random() * 1000),
+    title: (b.title || '').trim(),
+    subtitle: (b.subtitle || '').trim(),
+    photo: b.photo.trim(),
+    redirect: (b.redirect || '').trim(),
+    buttonText: (b.buttonText || '').trim() || 'My Photos 📞',
+    set: setName
+  };
+  lib.cardTemplates = lib.cardTemplates || [];
+  lib.cardTemplates.push(tmpl);
+  saveLibrary(lib);
+  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Template added to ' + setName));
+});
+
+app.post('/template-edit', (req, res) => {
+  const lib = loadLibrary();
+  const b = req.body;
+  const t = (lib.cardTemplates || []).find(x => x.id === b.id);
+  if (!t) return res.redirect('/?page=templates&error=Template+not+found');
+  if (b.title !== undefined) t.title = b.title.trim();
+  if (b.subtitle !== undefined) t.subtitle = b.subtitle.trim();
+  if (b.photo && b.photo.trim()) t.photo = b.photo.trim();
+  if (b.redirect !== undefined) t.redirect = b.redirect.trim();
+  if (b.buttonText !== undefined) t.buttonText = b.buttonText.trim() || 'My Photos 📞';
+  if (b.set && lib.redirectSets[b.set]) t.set = b.set;
+  saveLibrary(lib);
+  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Template updated'));
+});
+
+app.get('/template-delete', (req, res) => {
+  const lib = loadLibrary();
+  const id = req.query.id;
+  lib.cardTemplates = (lib.cardTemplates || []).filter(t => t.id !== id);
+  saveLibrary(lib);
+  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Template deleted'));
+});
+
+// ============================================
+// CONTENT MODE (Classic vs Templates)
+// ============================================
+// Set the GLOBAL default content mode
+app.post('/set-global-mode', (req, res) => {
+  const s = loadSettings();
+  s.contentMode = req.body.mode === 'templates' ? 'templates' : 'classic';
+  saveSettings(s);
+  const back = req.body.returnTo === 'templates' ? '/?page=templates' : '/?page=all';
+  res.redirect(back + '&lib_msg=' + encodeURIComponent('Global content mode set to ' + s.contentMode.toUpperCase()));
+});
+
+// Set a PAGE's content mode (classic / templates / global)
+app.post('/set-page-mode', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const m = req.body.mode;
+  if (m === 'classic' || m === 'templates') {
+    updatePage(pageId, { contentMode: m });
+  } else {
+    updatePage(pageId, { contentMode: 'global' }); // follow global default
+  }
+  res.redirect(req.body.returnTo === 'page' ? `/?page=${encodeURIComponent(pageId)}&saved=1` : '/?saved=1');
 });
 
 // ============================================
