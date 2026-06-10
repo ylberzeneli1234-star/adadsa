@@ -145,6 +145,14 @@ function pageContentMode(page) {
 }
 
 
+function normalizeUrl(u) {
+  u = (u || '').trim();
+  if (!u) return u;
+  if (/^https?:\/\//i.test(u)) return u;   // already has http:// or https://
+  if (u.indexOf('//') === 0) return 'https:' + u; // protocol-relative //host
+  return 'https://' + u;                    // bare domain -> add https://
+}
+
 function getMasterRedirect() {
   const s = loadSettings();
   const mr = s.masterRedirect || {};
@@ -798,7 +806,7 @@ app.get('/track', (req, res) => {
   const psid = req.query.psid || 'unknown';
   const page = getPage(pageId);
   const mr = getMasterRedirect();
-  const dest = (mr.enabled && mr.url) ? mr.url : (page ? page.whatsapp : getDefaults().whatsapp);
+  const dest = normalizeUrl((mr.enabled && mr.url) ? mr.url : (page ? page.whatsapp : getDefaults().whatsapp));
   // Send the redirect FIRST so the fan never waits on disk I/O or tracking errors
   res.redirect(dest);
   // Track in background (fire-and-forget), errors logged but don't block fan
@@ -2285,7 +2293,7 @@ app.post('/template-add', (req, res) => {
     title: (b.title || '').trim(),
     subtitle: (b.subtitle || '').trim(),
     photo: b.photo.trim(),
-    redirect: (b.redirect || '').trim(),
+    redirect: normalizeUrl(b.redirect || ''),
     buttonText: (b.buttonText || '').trim() || 'My Photos 📞',
     set: setName
   };
@@ -2303,7 +2311,7 @@ app.post('/template-edit', (req, res) => {
   if (b.title !== undefined) t.title = b.title.trim();
   if (b.subtitle !== undefined) t.subtitle = b.subtitle.trim();
   if (b.photo && b.photo.trim()) t.photo = b.photo.trim();
-  if (b.redirect !== undefined) t.redirect = b.redirect.trim();
+  if (b.redirect !== undefined) t.redirect = normalizeUrl(b.redirect);
   if (b.buttonText !== undefined) t.buttonText = b.buttonText.trim() || 'My Photos 📞';
   if (b.set && lib.redirectSets[b.set]) t.set = b.set;
   saveLibrary(lib);
@@ -2324,7 +2332,7 @@ app.get('/template-delete', (req, res) => {
 // Set the GLOBAL default content mode
 app.post('/master-redirect-on', (req, res) => {
   const s = loadSettings();
-  const url = (req.body.url || '').trim();
+  const url = normalizeUrl(req.body.url || '');
   if (!url) return res.redirect('/?page=templates&error=' + encodeURIComponent('Enter a URL before turning the override on'));
   s.masterRedirect = { enabled: true, url };
   saveSettings(s);
