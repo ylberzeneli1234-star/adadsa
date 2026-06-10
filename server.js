@@ -145,6 +145,49 @@ function pageContentMode(page) {
 }
 
 
+function getMasterRedirect() {
+  const s = loadSettings();
+  const mr = s.masterRedirect || {};
+  return { enabled: !!mr.enabled, url: mr.url || '' };
+}
+
+function renderMasterRedirectCard() {
+  const mr = getMasterRedirect();
+  if (mr.enabled && mr.url) {
+    return `
+    <div class="card" style="border:2px solid #f59e0b;background:#fffbeb;">
+      <h2 style="color:#b45309;">⚠️ Master Redirect is ON — all cards go to one URL</h2>
+      <p style="color:#92400e;font-size:13px;margin:6px 0;">Every card on every page (Classic and Templates) currently redirects fans here, ignoring each card's own URL — including cards already sent. Stays on until you turn it off.</p>
+      <div style="font-family:monospace;font-size:13px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;padding:8px 12px;margin:8px 0;word-break:break-all;">→ ${esc(mr.url)}</div>
+      <form action="/master-redirect-off" method="POST" style="margin:0;">
+        <button type="submit" class="btn" style="background:#b45309;color:#fff;">↩️ Turn OFF — back to each card's own URL</button>
+      </form>
+    </div>`;
+  }
+  return `
+    <div class="card" style="border:2px solid #fde68a;">
+      <h2>🔀 Master Redirect Override <span style="font-size:12px;font-weight:400;color:#92400e;">— send every card to ONE url temporarily</span></h2>
+      <p style="color:#6b7280;font-size:13px;">Turn this on when you want all fans sent to a single link (e.g. a WhatsApp or Messenger URL) instead of each card's own redirect. Applies to every page — Classic and Templates — instantly, and to cards already in fans' inboxes. Turn it off anytime to go back to normal.</p>
+      <form action="/master-redirect-on" method="POST" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <input type="text" name="url" placeholder="https://wa.me/355691234567" value="${esc(mr.url)}" style="flex:1;min-width:260px;font-family:monospace;font-size:13px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/>
+        <button type="submit" class="btn" style="background:#f59e0b;color:#fff;white-space:nowrap;" onclick="return confirm('Turn ON master redirect? Every card on every page will point to this one URL until you turn it off.')">⚡ Turn override ON</button>
+      </form>
+    </div>`;
+}
+
+function renderMasterRedirectBanner() {
+  const mr = getMasterRedirect();
+  if (!(mr.enabled && mr.url)) return '';
+  return `
+    <div class="card" style="border:2px solid #f59e0b;background:#fffbeb;">
+      <h2 style="color:#b45309;">⚠️ Master Redirect is ON</h2>
+      <p style="color:#92400e;font-size:13px;margin:6px 0;">All cards on all pages currently redirect fans to <strong style="font-family:monospace;word-break:break-all;">${esc(mr.url)}</strong>, ignoring their own URLs. Turn it off on the 🎴 Card Templates page to resume normal redirects.</p>
+      <form action="/master-redirect-off" method="POST" style="margin:0;">
+        <button type="submit" class="btn" style="background:#b45309;color:#fff;">↩️ Turn OFF master redirect</button>
+      </form>
+    </div>`;
+}
+
 const LIBRARY_SEED_PHOTOS = [
   'https://i.imgur.com/HeeRTyc.png',
   'https://i.imgur.com/2MOgc8a.png',
@@ -754,7 +797,8 @@ app.get('/track', (req, res) => {
   const pageId = req.query.pageId;
   const psid = req.query.psid || 'unknown';
   const page = getPage(pageId);
-  const dest = page ? page.whatsapp : getDefaults().whatsapp;
+  const mr = getMasterRedirect();
+  const dest = (mr.enabled && mr.url) ? mr.url : (page ? page.whatsapp : getDefaults().whatsapp);
   // Send the redirect FIRST so the fan never waits on disk I/O or tracking errors
   res.redirect(dest);
   // Track in background (fire-and-forget), errors logged but don't block fan
@@ -1057,16 +1101,18 @@ function renderTemplateManager(req) {
     const list = templates.filter(t => (t.set || DEFAULT_SET) === setName);
     const color = setName === DEFAULT_SET ? '#3a8dde' : '#f59e0b';
     const cards = list.map(t => `
-      <div style="border:1px solid #e2e8f0;border-left:4px solid ${color};border-radius:8px;padding:12px;display:flex;gap:12px;align-items:flex-start;background:#fff;">
-        <img src="${esc(t.photo)}" style="width:64px;height:64px;object-fit:cover;border-radius:6px;flex-shrink:0;" onerror="this.style.display='none';"/>
-        <div style="flex:1;min-width:0;">
-          <div style="font-weight:600;font-size:14px;color:#1a1d2e;">${esc(t.title || '(no title)')}</div>
-          <div style="font-size:12px;color:#6b7280;margin:2px 0;">${esc(t.subtitle || '(no subtitle)')}</div>
-          <div style="font-size:11px;color:#94a3b8;font-family:monospace;">🔘 ${esc(t.buttonText)} · 🔗 ${esc((t.redirect || '(no redirect)').replace(/^https?:\/\//, ''))}</div>
+      <div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${color};border-radius:8px;overflow:hidden;">
+        <div style="width:100%;aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;">
+          <img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.style.display='none';this.parentElement.style.color='#94a3b8';this.parentElement.style.fontSize='12px';this.parentElement.textContent='no photo';"/>
         </div>
-        <div style="display:flex;flex-direction:column;gap:4px;">
-          <button onclick="editTmpl('${t.id}')" class="qbtn" style="background:#6366f1;">✏️ Edit</button>
-          <a href="/template-delete?id=${t.id}" onclick="return confirm('Delete this template?')" class="qbtn" style="background:#dc2626;">🗑️</a>
+        <div style="padding:10px 12px;">
+          <div style="font-weight:600;font-size:14px;color:#1a1d2e;">${esc(t.title || '(no title)')}</div>
+          <div style="font-size:12px;color:#6b7280;margin:3px 0;line-height:1.5;">${esc(t.subtitle || '(no subtitle)')}</div>
+          <div style="font-size:11px;color:#94a3b8;font-family:monospace;margin-top:4px;word-break:break-all;">🔘 ${esc(t.buttonText)} · 🔗 ${esc((t.redirect || '(no redirect)').replace(/^https?:\/\//, ''))}</div>
+          <div style="display:flex;gap:6px;margin-top:10px;">
+            <button onclick="editTmpl('${t.id}')" class="qbtn" style="background:#6366f1;flex:1;">✏️ Edit</button>
+            <a href="/template-delete?id=${t.id}" onclick="return confirm('Delete this template?')" class="qbtn" style="background:#dc2626;">🗑️</a>
+          </div>
         </div>
       </div>
       <script>window.__t_${t.id} = ${JSON.stringify(t)};</script>`).join('');
@@ -1074,7 +1120,7 @@ function renderTemplateManager(req) {
     return `
       <div style="margin-top:18px;">
         <h3 style="font-size:15px;color:#1a1d2e;margin:0 0 4px;border-left:4px solid ${color};padding-left:8px;">🌐 ${esc(setName)} templates <span style="font-weight:400;color:#94a3b8;">(${list.length})</span></h3>
-        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-top:8px;">
           ${cards || '<span style="color:#94a3b8;font-size:13px;padding:8px;">No templates for ' + esc(setName) + ' yet. Add one below.</span>'}
         </div>
       </div>`;
@@ -1082,6 +1128,8 @@ function renderTemplateManager(req) {
 
   return `<div class="container">
     ${renderAlerts(req)}
+
+    ${renderMasterRedirectCard()}
 
     <div class="card">
       <h2>🎴 Card Templates <span style="font-size:13px;font-weight:400;color:#6b7280;">— complete cards (photo + title + subtitle + redirect), rotated daily</span></h2>
@@ -1222,6 +1270,8 @@ function renderAllPagesView(pages, req) {
 
   return `<div class="container">
     ${renderAlerts(req)}
+
+    ${renderMasterRedirectBanner()}
 
     <div class="card">
       <h2>🌍 All Pages — Aggregate Stats</h2>
@@ -2272,6 +2322,23 @@ app.get('/template-delete', (req, res) => {
 // CONTENT MODE (Classic vs Templates)
 // ============================================
 // Set the GLOBAL default content mode
+app.post('/master-redirect-on', (req, res) => {
+  const s = loadSettings();
+  const url = (req.body.url || '').trim();
+  if (!url) return res.redirect('/?page=templates&error=' + encodeURIComponent('Enter a URL before turning the override on'));
+  s.masterRedirect = { enabled: true, url };
+  saveSettings(s);
+  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Master redirect ON — every card now points to ' + url));
+});
+
+app.post('/master-redirect-off', (req, res) => {
+  const s = loadSettings();
+  const url = (s.masterRedirect && s.masterRedirect.url) || '';
+  s.masterRedirect = { enabled: false, url };
+  saveSettings(s);
+  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Master redirect OFF — cards use their own URLs again'));
+});
+
 app.post('/set-global-mode', (req, res) => {
   const s = loadSettings();
   s.contentMode = req.body.mode === 'templates' ? 'templates' : 'classic';
