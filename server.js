@@ -618,7 +618,9 @@ function setupMessenger(page) {
 }
 
 function sendCard(page, psid, opts = {}) {
-  const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}`;
+  const rawDest = normalizeUrl(opts.redirect || page.whatsapp || '');
+  const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}`
+    + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');  // frozen per-card link
   const title = opts.title || page.title;
   const subtitle = opts.subtitle || page.subtitle;
   const photo = opts.photo || getCurrentPhoto(page);
@@ -806,7 +808,11 @@ app.get('/track', (req, res) => {
   const psid = req.query.psid || 'unknown';
   const page = getPage(pageId);
   const mr = getMasterRedirect();
-  const dest = normalizeUrl((mr.enabled && mr.url) ? mr.url : (page ? page.whatsapp : getDefaults().whatsapp));
+  let dest;
+  if (mr.enabled && mr.url) dest = mr.url;            // master override wins
+  else if (req.query.d) dest = req.query.d;            // frozen per-card link (new cards)
+  else dest = page ? page.whatsapp : getDefaults().whatsapp; // old cards: current page url
+  dest = normalizeUrl(dest);
   // Send the redirect FIRST so the fan never waits on disk I/O or tracking errors
   res.redirect(dest);
   // Track in background (fire-and-forget), errors logged but don't block fan
