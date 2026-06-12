@@ -1418,7 +1418,8 @@ function renderAllPagesView(pages, req) {
             <form action="/reset-stats-all" method="POST" style="display:inline;margin:0;">
               <button type="submit" class="qbtn" style="background:#dc2626;" onclick="return confirm('Reset ALL stats to 0 on all ${pages.length} pages?\\n\\nThis clears clicks, messages sent/failed, and daily history.\\n\\n✅ Fan counts are KEPT.\\n❌ Stats history is permanently erased.')">🗑️ Reset All Stats (keep fans)</button>
             </form>
-            <span style="font-size:11px;color:#6b7280;margin-left:8px;display:block;width:100%;">— useful before deploying code changes</span>
+            <a href="/backup" class="qbtn" style="background:#0f766e;text-decoration:none;display:inline-flex;align-items:center;" title="Download a full backup of all data (pages, templates, fans, stats, settings)">⬇️ Download Backup</a>
+            <span style="font-size:11px;color:#6b7280;margin-left:8px;display:block;width:100%;">— useful before deploying code changes · download a backup anytime</span>
           </div>
           <div style="margin-bottom:12px;padding:12px;background:#faf5ff;border:2px solid #e9d5ff;border-radius:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
             <span style="font-size:13px;font-weight:700;color:#6b21a8;">🎚️ Global Content Mode:</span>
@@ -2361,6 +2362,20 @@ app.post('/set-page-redirect-set', (req, res) => {
 // ============================================
 // CARD TEMPLATES (create/edit/delete on the Templates page)
 // ============================================
+app.get('/backup', (req, res) => {
+  const out = { exportedAt: new Date().toISOString(), dataDir: DATA_DIR, files: {} };
+  try {
+    fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json') && f !== 'package.json' && f !== 'package-lock.json').forEach(f => {
+      const raw = fs.readFileSync(`${DATA_DIR}/${f}`, 'utf8');
+      try { out.files[f] = JSON.parse(raw); } catch (e) { out.files[f] = { __unparsed: raw }; }
+    });
+  } catch (e) {}
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="messagebot-backup-${stamp}.json"`);
+  res.send(JSON.stringify(out, null, 2));
+});
+
 app.post('/template-add', (req, res) => {
   const lib = loadLibrary();
   const b = req.body;
