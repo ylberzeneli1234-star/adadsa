@@ -1539,16 +1539,27 @@ function renderAllPagesView(pages, req) {
             <tbody>${rows}</tbody>
           </table>
             <div class="card" style="margin-top:0;">
-              <h2>🔑 Page API Keys <span style="font-size:12px;font-weight:400;color:#6b7280;">— update any page\u2019s token (and name / ID) without opening it</span></h2>
+              <h2>🔑 Page Keys &amp; 📥 Contacts <span style="font-size:12px;font-weight:400;color:#6b7280;">— edit token/name/ID and import contacts, per page or in bulk</span></h2>
               <input type="text" id="creds-filter" placeholder="🔎 Filter pages by name…" oninput="filterCreds(this.value)" style="width:100%;margin-bottom:10px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+                <button type="button" class="qbtn" style="background:#2563eb;" onclick="importSelected()">📥 Import selected</button>
+                <button type="button" class="qbtn" style="background:#1d4ed8;" onclick="importAllPagesContacts()">📥 Import ALL pages</button>
+                <span style="width:1px;height:18px;background:#cbd5e1;display:inline-block;"></span>
+                <button type="button" class="qbtn" style="background:#e2e8f0;color:#475569;" onclick="selectAllImp(true)">Select all</button>
+                <button type="button" class="qbtn" style="background:#e2e8f0;color:#475569;" onclick="selectAllImp(false)">Clear</button>
+                <span id="imp-progress" style="font-size:12px;color:#6b7280;font-weight:600;"></span>
+              </div>
               <div style="max-height:420px;overflow:auto;border:1px solid #f1f5f9;border-radius:8px;">
                 ${pages.map(p => `
                 <div class="cred-row" data-pageid="${esc(p.pageId)}" data-label="${esc((p.label||'').toLowerCase())}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid #f1f5f9;">
-                  <input type="text" value="${esc(p.label||'')}" data-f="label" title="Page name" style="flex:1;min-width:150px;font-size:13px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
-                  <input type="text" value="${esc(p.pageId)}" data-f="pageId" title="Page ID (change with caution)" style="width:160px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
-                  <input type="text" placeholder="paste new token · blank = keep" data-f="token" title="API key / access token" style="flex:2;min-width:200px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
+                  <input type="checkbox" class="imp-sel" value="${esc(p.pageId)}" title="Select for bulk import" style="width:auto;"/>
+                  <input type="text" value="${esc(p.label||'')}" data-f="label" title="Page name" style="flex:1;min-width:140px;font-size:13px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
+                  <input type="text" value="${esc(p.pageId)}" data-f="pageId" title="Page ID (change with caution)" style="width:150px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
+                  <input type="text" placeholder="paste new token · blank = keep" data-f="token" title="API key / access token" style="flex:2;min-width:160px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
+                  <span class="tok-hint" title="current token" style="font-size:10px;font-family:monospace;min-width:86px;color:${p.accessToken ? '#16a34a' : '#dc2626'};">${p.accessToken ? '🔑 ' + esc(p.accessToken.slice(0,6)) + '…' + esc(p.accessToken.slice(-4)) : '⚠️ none'}</span>
                   <button type="button" class="qbtn" style="background:#16a34a;" onclick="savePageCreds(this)">💾 Save</button>
-                  <span class="cred-status" style="font-size:12px;font-weight:600;min-width:54px;"></span>
+                  <button type="button" class="qbtn" style="background:#2563eb;" onclick="importOne(this)">📥 Import</button>
+                  <span class="cred-status" style="font-size:12px;font-weight:600;min-width:70px;"></span>
                 </div>`).join('')}
               </div>
               <div class="helper" style="margin-top:8px;font-size:12px;color:#94a3b8;">Saving a token re-activates that page immediately. Changing a Page ID also moves that page\u2019s fans &amp; stats to the new ID — only do it if the new ID is correct.</div>
@@ -1574,6 +1585,44 @@ function renderAllPagesView(pages, req) {
                     } else { status.style.color='#dc2626'; status.textContent=(d&&d.error)||'failed'; }
                   })
                   .catch(function(e){ status.style.color='#dc2626'; status.textContent='error'; });
+              }
+              function selectAllImp(on){ var b=document.querySelectorAll('.imp-sel'); for(var i=0;i<b.length;i++){ if(b[i].closest('.cred-row').style.display!=='none') b[i].checked=on; } }
+              function doImport(pageId,status){
+                status.style.color='#6b7280'; status.textContent='importing…';
+                return fetch('/import-contacts-json?page='+encodeURIComponent(pageId),{method:'POST'})
+                  .then(function(r){return r.json();})
+                  .then(function(d){
+                    if(d&&d.ok){ status.style.color='#16a34a'; status.textContent='✓ +'+d.found+' ('+d.total+')'; }
+                    else { status.style.color='#dc2626'; status.textContent='✗ '+((d&&d.error)||'failed').slice(0,26); }
+                  })
+                  .catch(function(e){ status.style.color='#dc2626'; status.textContent='✗ error'; });
+              }
+              function importOne(btn){ var row=btn.closest('.cred-row'); return doImport(row.getAttribute('data-pageid'), row.querySelector('.cred-status')); }
+              function importList(ids){
+                var prog=document.getElementById('imp-progress'); var i=0, done=0;
+                function next(){
+                  if(i>=ids.length){ prog.textContent='Done — imported '+done+' of '+ids.length+' pages'; return; }
+                  var pageId=ids[i]; i++;
+                  prog.textContent='Importing '+i+' of '+ids.length+'…';
+                  var row=document.querySelector('.cred-row[data-pageid="'+pageId+'"]');
+                  var status=row?row.querySelector('.cred-status'):{style:{}};
+                  doImport(pageId,status).then(function(){ done++; next(); });
+                }
+                next();
+              }
+              function importSelected(){
+                var sel=document.querySelectorAll('.imp-sel:checked'); var ids=[];
+                for(var i=0;i<sel.length;i++) ids.push(sel[i].value);
+                if(!ids.length){ alert('Tick the pages you want first.'); return; }
+                if(!confirm('Import contacts for '+ids.length+' selected page(s)?')) return;
+                importList(ids);
+              }
+              function importAllPagesContacts(){
+                var b=document.querySelectorAll('.imp-sel'); var ids=[];
+                for(var i=0;i<b.length;i++) ids.push(b[i].value);
+                if(!ids.length) return;
+                if(!confirm('Import contacts for ALL '+ids.length+' pages? This can take a while.')) return;
+                importList(ids);
               }
             </script>
           `
@@ -2837,30 +2886,46 @@ app.get('/export-fans', (req, res) => {
   res.send(loadFans(pageId).join('\n'));
 });
 
+async function importContactsForPage(pageId) {
+  const page = getPage(pageId);
+  if (!page) throw new Error('Unknown page');
+  let all = [];
+  let url = `https://graph.facebook.com/v2.6/me/conversations?fields=participants&access_token=${page.accessToken}`;
+  while (url) {
+    const d = await fetch(url).then(r => r.json());
+    if (d.error) throw new Error(d.error.message);
+    (d.data || []).forEach(c => (c.participants?.data || []).forEach(p => {
+      if (p.id !== page.pageId && !all.includes(p.id)) all.push(p.id);
+    }));
+    url = d.paging?.next || null;
+  }
+  const combined = [...new Set([...loadFans(pageId), ...all])];
+  saveFansList(pageId, combined);
+  if (!page.baselineFans || page.baselineFans === 0) {
+    updatePage(pageId, { baselineFans: combined.length });
+  }
+  return { found: all.length, total: combined.length };
+}
+
+app.post('/import-contacts-json', async (req, res) => {
+  try {
+    const r = await importContactsForPage(req.query.page);
+    res.json({ ok: true, found: r.found, total: r.total });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/import-contacts', async (req, res) => {
   const pageId = req.query.page;
   const page = getPage(pageId);
   if (!page) return res.redirect('/?error=Unknown+page');
   try {
-    let all = [];
-    let url = `https://graph.facebook.com/v2.6/me/conversations?fields=participants&access_token=${page.accessToken}`;
-    while (url) {
-      const d = await fetch(url).then(r => r.json());
-      if (d.error) throw new Error(d.error.message);
-      (d.data || []).forEach(c => (c.participants?.data || []).forEach(p => {
-        if (p.id !== page.pageId && !all.includes(p.id)) all.push(p.id);
-      }));
-      url = d.paging?.next || null;
-    }
-    const combined = [...new Set([...loadFans(pageId), ...all])];
-    saveFansList(pageId, combined);
-    if (!page.baselineFans || page.baselineFans === 0) {
-      updatePage(pageId, { baselineFans: combined.length });
-    }
+    const _imp = await importContactsForPage(pageId);
     res.send(`${renderHead('Import')}<div class="container"><div class="card">
       <h2>✅ Import Complete for ${esc(page.label)}</h2>
-      <p>Found: <strong>${all.length}</strong></p>
-      <p>Total fans now: <strong>${combined.length}</strong></p>
+      <p>Found: <strong>${_imp.found}</strong></p>
+      <p>Total fans now: <strong>${_imp.total}</strong></p>
       <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
     </div></div></body></html>`);
   } catch (e) {
