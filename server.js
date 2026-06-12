@@ -1140,7 +1140,7 @@ function renderTemplateManager(req) {
           ${isActive ? '' : `<span style="position:absolute;top:6px;right:6px;background:#64748b;color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;">PAUSED</span>`}
         </div>
         <div style="padding:10px 12px;">
-          <label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:${isActive ? '#16a34a' : '#94a3b8'};margin-bottom:6px;cursor:pointer;"><input type="checkbox" ${isActive ? 'checked' : ''} onchange="location.href=\'/template-toggle?id=${t.id}\'" style="width:auto;"/> ${isActive ? 'Active' : 'Paused'}</label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#475569;margin-bottom:6px;cursor:pointer;"><input type="checkbox" class="tmpl-sel" value="${t.id}" onclick="event.stopPropagation();" style="width:auto;"/> Select</label>
           <div style="font-weight:600;font-size:14px;color:#1a1d2e;">${esc(t.title || '(no title)')}</div>
           <div style="font-size:12px;color:#6b7280;margin:3px 0;line-height:1.5;">${esc(t.subtitle || '(no subtitle)')}</div>
           <div style="font-size:11px;color:#94a3b8;font-family:monospace;margin-top:4px;word-break:break-all;">🔘 ${esc(t.buttonText)} · 🔗 ${esc((t.redirect || '(no redirect)').replace(/^https?:\/\//, ''))}</div>
@@ -1220,6 +1220,15 @@ function renderTemplateManager(req) {
 
     <div class="card">
       <h2>📋 Existing Templates</h2>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#f7f8fc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:6px;">
+        <span style="font-size:12px;font-weight:600;color:#475569;">Tick cards, then:</span>
+        <button type="button" class="btn" style="background:#f59e0b;color:#fff;" onclick="bulkSetActive(false)">⏸️ Pause selected</button>
+        <button type="button" class="btn" style="background:#16a34a;color:#fff;" onclick="bulkSetActive(true)">▶️ Activate selected</button>
+        <span style="width:1px;height:20px;background:#cbd5e1;display:inline-block;"></span>
+        <button type="button" class="btn" style="background:#e2e8f0;color:#475569;" onclick="selectAllTmpls(true)">Select all</button>
+        <button type="button" class="btn" style="background:#e2e8f0;color:#475569;" onclick="selectAllTmpls(false)">Clear</button>
+        <span id="sel-count" style="font-size:12px;color:#94a3b8;font-weight:600;"></span>
+      </div>
       ${sections}
     </div>
 
@@ -1300,6 +1309,25 @@ function renderTemplateManager(req) {
         if (!url) { alert('A URL is required to duplicate.'); return; }
         window.location.href = '/template-duplicate?id=' + encodeURIComponent(id) + '&to=' + encodeURIComponent(toSet) + '&url=' + encodeURIComponent(url);
       }
+      function updateSelCount() {
+        var n = document.querySelectorAll('.tmpl-sel:checked').length;
+        var el = document.getElementById('sel-count');
+        if (el) el.textContent = n ? (n + ' selected') : '';
+      }
+      function selectAllTmpls(on) {
+        var b = document.querySelectorAll('.tmpl-sel');
+        for (var i = 0; i < b.length; i++) b[i].checked = on;
+        updateSelCount();
+      }
+      function bulkSetActive(makeActive) {
+        var sel = document.querySelectorAll('.tmpl-sel:checked');
+        var ids = []; for (var i = 0; i < sel.length; i++) ids.push(sel[i].value);
+        if (!ids.length) { alert('Tick the cards you want first.'); return; }
+        fetch('/templates-bulk-active', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ids, active: makeActive }) })
+          .then(function(r){ return r.json(); })
+          .then(function(){ location.href = '/?page=templates'; })
+          .catch(function(e){ alert('Error: ' + e.message); });
+      }
       function fillFromRow() {
         var raw = document.getElementById('f-rawrow').value || '';
         if (!raw.trim()) { alert('Paste a row from your sheet first.'); return; }
@@ -1364,6 +1392,7 @@ function renderTemplateManager(req) {
       })();
       renderPhotoGrid();
       setupDropzone();
+      document.addEventListener('change', function(e){ if (e.target && e.target.classList && e.target.classList.contains('tmpl-sel')) updateSelCount(); });
     </script>
   </div>`;
 }
@@ -2531,6 +2560,16 @@ app.get('/template-duplicate', (req, res) => {
   lib.cardTemplates.unshift(dup);
   saveLibrary(lib);
   res.redirect('/?page=templates&new=' + dup.id + '&lib_msg=' + encodeURIComponent('Card duplicated to ' + toSet));
+});
+
+app.post('/templates-bulk-active', (req, res) => {
+  const lib = loadLibrary();
+  const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+  const makeActive = !!req.body.active;
+  let n = 0;
+  (lib.cardTemplates || []).forEach(t => { if (ids.indexOf(t.id) !== -1) { t.active = makeActive; n++; } });
+  saveLibrary(lib);
+  res.json({ ok: true, updated: n });
 });
 
 app.get('/template-toggle', (req, res) => {
