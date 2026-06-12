@@ -1534,6 +1534,44 @@ function renderAllPagesView(pages, req) {
             </form>
             <span style="font-size:11px;color:#7c3aed;margin-left:4px;">Default for pages set to "Global". Each page can override below.</span>
           </div>
+            <div class="card" style="margin-top:0;">
+              <h2>🔑 Page API Keys <span style="font-size:12px;font-weight:400;color:#6b7280;">— update any page\u2019s token (and name / ID) without opening it</span></h2>
+              <input type="text" id="creds-filter" placeholder="🔎 Filter pages by name…" oninput="filterCreds(this.value)" style="width:100%;margin-bottom:10px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/>
+              <div style="max-height:420px;overflow:auto;border:1px solid #f1f5f9;border-radius:8px;">
+                ${pages.map(p => `
+                <div class="cred-row" data-pageid="${esc(p.pageId)}" data-label="${esc((p.label||'').toLowerCase())}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid #f1f5f9;">
+                  <input type="text" value="${esc(p.label||'')}" data-f="label" title="Page name" style="flex:1;min-width:150px;font-size:13px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
+                  <input type="text" value="${esc(p.pageId)}" data-f="pageId" title="Page ID (change with caution)" style="width:160px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
+                  <input type="text" placeholder="paste new token · blank = keep" data-f="token" title="API key / access token" style="flex:2;min-width:200px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
+                  <button type="button" class="qbtn" style="background:#16a34a;" onclick="savePageCreds(this)">💾 Save</button>
+                  <span class="cred-status" style="font-size:12px;font-weight:600;min-width:54px;"></span>
+                </div>`).join('')}
+              </div>
+              <div class="helper" style="margin-top:8px;font-size:12px;color:#94a3b8;">Saving a token re-activates that page immediately. Changing a Page ID also moves that page\u2019s fans &amp; stats to the new ID — only do it if the new ID is correct.</div>
+            </div>
+            <script>
+              function filterCreds(q){ q=(q||'').toLowerCase(); var rows=document.querySelectorAll('.cred-row'); for(var i=0;i<rows.length;i++){ var m=rows[i].getAttribute('data-label').indexOf(q)!==-1; rows[i].style.display=m?'':'none'; } }
+              function savePageCreds(btn){
+                var row=btn.closest('.cred-row');
+                var pageId=row.getAttribute('data-pageid');
+                var label=row.querySelector('[data-f="label"]').value;
+                var newPageId=row.querySelector('[data-f="pageId"]').value;
+                var token=row.querySelector('[data-f="token"]').value;
+                var status=row.querySelector('.cred-status');
+                status.style.color='#6b7280'; status.textContent='saving…';
+                fetch('/page-update-inline',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pageId:pageId,label:label,newPageId:newPageId,token:token})})
+                  .then(function(r){return r.json();})
+                  .then(function(d){
+                    if(d&&d.ok){
+                      status.style.color='#16a34a'; status.textContent='✓ saved';
+                      row.querySelector('[data-f="token"]').value='';
+                      if(d.pageId){ row.setAttribute('data-pageid',d.pageId); }
+                      setTimeout(function(){status.textContent='';},2500);
+                    } else { status.style.color='#dc2626'; status.textContent=(d&&d.error)||'failed'; }
+                  })
+                  .catch(function(e){ status.style.color='#dc2626'; status.textContent='error'; });
+              }
+            </script>
           <table>
             <thead><tr><th>Page</th><th>Fans</th><th>Clicks (today / total)</th><th>Messages</th><th>Status</th><th>Mode</th><th>Send Progress</th><th>Quick actions</th></tr></thead>
             <tbody>${rows}</tbody>
@@ -2301,6 +2339,29 @@ app.post('/update-settings', (req, res) => {
 });
 
 // Edit page token + label without losing fans/stats/photos/history.
+app.post('/page-update-inline', (req, res) => {
+  const pageId = req.body.pageId;
+  const page = getPage(pageId);
+  if (!page) return res.json({ ok: false, error: 'page not found' });
+  const updates = {};
+  if (typeof req.body.label === 'string' && req.body.label.trim()) updates.label = req.body.label.trim();
+  if (typeof req.body.token === 'string' && req.body.token.trim()) updates.accessToken = req.body.token.trim();
+  const newPageId = (req.body.newPageId || '').trim();
+  let finalId = pageId;
+  if (newPageId && newPageId !== pageId) {
+    if (getPage(newPageId)) return res.json({ ok: false, error: 'that Page ID already exists' });
+    updates.pageId = newPageId;
+    finalId = newPageId;
+  }
+  updatePage(pageId, updates);
+  if (finalId !== pageId) {
+    try { if (fs.existsSync(fansFile(pageId))) fs.renameSync(fansFile(pageId), fansFile(finalId)); } catch (e) {}
+    try { if (fs.existsSync(statsFile(pageId))) fs.renameSync(statsFile(pageId), statsFile(finalId)); } catch (e) {}
+  }
+  if (updates.accessToken) { try { setupMessenger(getPage(finalId)); } catch (e) {} }
+  res.json({ ok: true, pageId: finalId });
+});
+
 app.post('/edit-page', (req, res) => {
   const pageId = req.query.page;
   const page = getPage(pageId);
