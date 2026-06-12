@@ -9,7 +9,7 @@ const fs = require('fs');
 const basicAuth = require('express-basic-auth');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // ============================================
@@ -349,7 +349,7 @@ function randomizePage(page, opts = {}) {
   const doRedirect = opts.redirect !== false;
   const lib = loadLibrary();
   const setName = pageSet(page, lib);
-  const tmpls = templatesForSet(lib, setName);
+  const tmpls = templatesForSet(lib, setName).filter(t => t.active !== false);
 
   // TEMPLATE MODE: only if this page's content mode is 'templates' AND a full randomize
   const mode = pageContentMode(page);
@@ -1131,13 +1131,16 @@ function renderTemplateManager(req) {
     const cards = list.map(t => {
       const otherSet = (t.set === SECOND_SET) ? DEFAULT_SET : SECOND_SET;
       const photoCount = (Array.isArray(t.photos) && t.photos.length) ? t.photos.length : (t.photo ? 1 : 0);
+      const isActive = t.active !== false;
       return `
-      <div id="tmpl-${t.id}" style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${color};border-radius:8px;overflow:hidden;">
+      <div id="tmpl-${t.id}" style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${color};border-radius:8px;overflow:hidden;${isActive ? '' : 'opacity:0.5;filter:grayscale(0.7);'}">
         <div style="width:100%;aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;position:relative;">
           <img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.style.display='none';this.parentElement.style.color='#94a3b8';this.parentElement.style.fontSize='12px';this.parentElement.textContent='no photo';"/>
           ${photoCount > 1 ? `<span style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,0.6);color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;">📷 ${photoCount}</span>` : ''}
+          ${isActive ? '' : `<span style="position:absolute;top:6px;right:6px;background:#64748b;color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;">PAUSED</span>`}
         </div>
         <div style="padding:10px 12px;">
+          <label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:${isActive ? '#16a34a' : '#94a3b8'};margin-bottom:6px;cursor:pointer;"><input type="checkbox" ${isActive ? 'checked' : ''} onchange="location.href=\'/template-toggle?id=${t.id}\'" style="width:auto;"/> ${isActive ? 'Active' : 'Paused'}</label>
           <div style="font-weight:600;font-size:14px;color:#1a1d2e;">${esc(t.title || '(no title)')}</div>
           <div style="font-size:12px;color:#6b7280;margin:3px 0;line-height:1.5;">${esc(t.subtitle || '(no subtitle)')}</div>
           <div style="font-size:11px;color:#94a3b8;font-family:monospace;margin-top:4px;word-break:break-all;">🔘 ${esc(t.buttonText)} · 🔗 ${esc((t.redirect || '(no redirect)').replace(/^https?:\/\//, ''))}</div>
@@ -1177,6 +1180,11 @@ function renderTemplateManager(req) {
       <h2 id="form-title">➕ Add New Template</h2>
       <form action="/template-add" method="POST" id="tmpl-form" onsubmit="return validateTmplForm();">
         <input type="hidden" name="id" id="f-id" value=""/>
+        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px 12px;margin-bottom:14px;">
+          <label style="font-weight:600;color:#0369a1;">⚡ Quick paste from sheet <span style="font-weight:400;color:#0c7bb3;font-size:12px;">— paste one row: Name / Subtitle / Photo / Button / Scrollgallery URL / TheViralBox URL</span></label>
+          <textarea id="f-rawrow" placeholder="Paste a row copied from your spreadsheet here, then click Fill fields." style="width:100%;min-height:54px;font-size:12px;margin-top:6px;font-family:monospace;"></textarea>
+          <button type="button" class="btn" style="background:#0ea5e9;color:#fff;margin-top:6px;" onclick="fillFromRow()">⤵️ Fill fields from row</button>
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div>
             <label>Card Title (the name)</label>
@@ -1199,6 +1207,7 @@ function renderTemplateManager(req) {
           <input type="text" id="f-photo-add" placeholder="https://i.imgur.com/xxxxx.png" style="flex:1;font-family:monospace;font-size:12px;"/>
           <button type="button" class="btn btn-green" style="white-space:nowrap;" onclick="addPhotoToForm()">+ Add photo</button>
         </div>
+        <div id="f-dropzone" style="margin-top:8px;border:2px dashed #cbd5e1;border-radius:8px;padding:14px;text-align:center;color:#94a3b8;font-size:13px;cursor:pointer;">📂 Drag &amp; drop a photo here (or click) to upload to Imgur</div>
         <div id="f-photo-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin-top:10px;"></div>
         <label style="margin-top:10px;display:block;">Redirect URL</label>
         <input name="redirect" id="f-redirect" placeholder="https://scrollgallery.com/?p=50328" style="width:100%;font-family:monospace;font-size:12px;"/>
@@ -1218,6 +1227,42 @@ function renderTemplateManager(req) {
       var formPhotos = [];
       function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
       function imgFail(el){ el.style.display='none'; var p=el.parentElement; p.style.color='#94a3b8'; p.style.fontSize='10px'; p.textContent='no img'; }
+      function uploadImageFile(file) {
+        if (!file || !file.type || file.type.indexOf('image/') !== 0) { alert('Please drop an image file.'); return; }
+        var dz = document.getElementById('f-dropzone');
+        var orig = '📂 Drag & drop a photo here (or click) to upload to Imgur';
+        dz.textContent = '⏳ Uploading to Imgur...';
+        var reader = new FileReader();
+        reader.onload = function() {
+          fetch('/upload-image', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: reader.result }) })
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+              if (d && d.url) {
+                formPhotos.push(d.url);
+                renderPhotoGrid();
+                dz.textContent = '✅ Added! Drop another, or click.';
+                setTimeout(function(){ dz.textContent = orig; }, 1800);
+              } else {
+                dz.textContent = orig;
+                alert('Upload failed: ' + ((d && d.error) || 'unknown error'));
+              }
+            })
+            .catch(function(e){ dz.textContent = orig; alert('Upload error: ' + e.message); });
+        };
+        reader.readAsDataURL(file);
+      }
+      function setupDropzone() {
+        var dz = document.getElementById('f-dropzone');
+        if (!dz) return;
+        var fi = document.createElement('input');
+        fi.type = 'file'; fi.accept = 'image/*'; fi.style.display = 'none';
+        document.body.appendChild(fi);
+        dz.addEventListener('click', function(){ fi.click(); });
+        fi.addEventListener('change', function(){ if (fi.files[0]) { uploadImageFile(fi.files[0]); fi.value = ''; } });
+        dz.addEventListener('dragover', function(e){ e.preventDefault(); dz.style.background = '#eef2ff'; });
+        dz.addEventListener('dragleave', function(e){ e.preventDefault(); dz.style.background = 'transparent'; });
+        dz.addEventListener('drop', function(e){ e.preventDefault(); dz.style.background = 'transparent'; if (e.dataTransfer.files[0]) uploadImageFile(e.dataTransfer.files[0]); });
+      }
       function renderPhotoGrid() {
         document.getElementById('f-photos').value = JSON.stringify(formPhotos);
         var grid = document.getElementById('f-photo-grid');
@@ -1254,6 +1299,31 @@ function renderTemplateManager(req) {
         url = (url || '').trim();
         if (!url) { alert('A URL is required to duplicate.'); return; }
         window.location.href = '/template-duplicate?id=' + encodeURIComponent(id) + '&to=' + encodeURIComponent(toSet) + '&url=' + encodeURIComponent(url);
+      }
+      function fillFromRow() {
+        var raw = document.getElementById('f-rawrow').value || '';
+        if (!raw.trim()) { alert('Paste a row from your sheet first.'); return; }
+        var TAB = String.fromCharCode(9), NL = String.fromCharCode(10);
+        var line = raw.split(NL)[0];
+        var c = line.split(TAB);
+        function cell(i){ return (c[i] || '').trim(); }
+        if (cell(0)) document.getElementById('f-title').value = cell(0);
+        if (cell(1)) document.getElementById('f-subtitle').value = cell(1);
+        if (cell(3)) document.getElementById('f-button').value = cell(3);
+        if (cell(2) && cell(2).indexOf('http') === 0) { formPhotos.push(cell(2)); renderPhotoGrid(); }
+        var scrollUrl = '', viralUrl = '';
+        for (var i = 0; i < c.length; i++) {
+          var v = (c[i] || '').trim();
+          if (v.indexOf('http') === 0) {
+            if (v.indexOf('theviralbox') !== -1) viralUrl = v;
+            else if (v.indexOf('scrollgallery') !== -1) scrollUrl = v;
+          }
+        }
+        var setSel = document.getElementById('f-set');
+        var redirect = (setSel.value === 'TheViralBox' && viralUrl) ? viralUrl : (scrollUrl || viralUrl);
+        if (redirect) document.getElementById('f-redirect').value = redirect;
+        if (redirect && redirect.indexOf('theviralbox') !== -1) setSel.value = 'TheViralBox';
+        else if (redirect && redirect.indexOf('scrollgallery') !== -1) setSel.value = 'Scrollgallery';
       }
       function editTmpl(id) {
         var t = window['__t_' + id];
@@ -1293,6 +1363,7 @@ function renderTemplateManager(req) {
         setTimeout(function(){ el.style.boxShadow = 'none'; }, 2600);
       })();
       renderPhotoGrid();
+      setupDropzone();
     </script>
   </div>`;
 }
@@ -2377,6 +2448,26 @@ app.get('/backup', (req, res) => {
   res.send(JSON.stringify(out, null, 2));
 });
 
+app.post('/upload-image', async (req, res) => {
+  const clientId = process.env.IMGUR_CLIENT_ID;
+  if (!clientId) return res.status(400).json({ error: 'IMGUR_CLIENT_ID is not set. Add it in Railway -> Variables.' });
+  const b64 = (req.body.image || '').replace(/^data:image\/\w+;base64,/, '');
+  if (!b64) return res.status(400).json({ error: 'No image provided' });
+  try {
+    const r = await fetch('https://api.imgur.com/3/image', {
+      method: 'POST',
+      headers: { 'Authorization': 'Client-ID ' + clientId, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: b64, type: 'base64' })
+    });
+    const d = await r.json();
+    if (d && d.success && d.data && d.data.link) return res.json({ url: d.data.link });
+    const msg = (d && d.data && d.data.error) ? (typeof d.data.error === 'string' ? d.data.error : 'Imgur rejected the upload') : 'Imgur upload failed';
+    return res.status(502).json({ error: msg });
+  } catch (e) {
+    return res.status(502).json({ error: 'Upload error: ' + e.message });
+  }
+});
+
 app.post('/template-add', (req, res) => {
   const lib = loadLibrary();
   const b = req.body;
@@ -2393,6 +2484,7 @@ app.post('/template-add', (req, res) => {
     photo: photos[0],
     redirect: normalizeUrl(b.redirect || ''),
     buttonText: (b.buttonText || '').trim() || 'My Photos 📞',
+    active: true,
     set: setName
   };
   lib.cardTemplates = lib.cardTemplates || [];
@@ -2433,12 +2525,20 @@ app.get('/template-duplicate', (req, res) => {
     id: 't' + Date.now() + Math.floor(Math.random() * 1000),
     title: src.title, subtitle: src.subtitle,
     photos, photo: photos[0] || '',
-    redirect: url, buttonText: src.buttonText, set: toSet
+    redirect: url, buttonText: src.buttonText, active: true, set: toSet
   };
   lib.cardTemplates = lib.cardTemplates || [];
   lib.cardTemplates.unshift(dup);
   saveLibrary(lib);
   res.redirect('/?page=templates&new=' + dup.id + '&lib_msg=' + encodeURIComponent('Card duplicated to ' + toSet));
+});
+
+app.get('/template-toggle', (req, res) => {
+  const lib = loadLibrary();
+  const t = (lib.cardTemplates || []).find(x => x.id === req.query.id);
+  if (t) { t.active = (t.active === false); saveLibrary(lib); }
+  const msg = t ? (t.active ? 'Card activated' : 'Card paused') : 'Template not found';
+  res.redirect('/?page=templates&new=' + (req.query.id || '') + '&lib_msg=' + encodeURIComponent(msg));
 });
 
 app.get('/template-delete', (req, res) => {
