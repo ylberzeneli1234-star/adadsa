@@ -1534,6 +1534,10 @@ function renderAllPagesView(pages, req) {
             </form>
             <span style="font-size:11px;color:#7c3aed;margin-left:4px;">Default for pages set to "Global". Each page can override below.</span>
           </div>
+          <table>
+            <thead><tr><th>Page</th><th>Fans</th><th>Clicks (today / total)</th><th>Messages</th><th>Status</th><th>Mode</th><th>Send Progress</th><th>Quick actions</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
             <div class="card" style="margin-top:0;">
               <h2>🔑 Page API Keys <span style="font-size:12px;font-weight:400;color:#6b7280;">— update any page\u2019s token (and name / ID) without opening it</span></h2>
               <input type="text" id="creds-filter" placeholder="🔎 Filter pages by name…" oninput="filterCreds(this.value)" style="width:100%;margin-bottom:10px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/>
@@ -1572,10 +1576,7 @@ function renderAllPagesView(pages, req) {
                   .catch(function(e){ status.style.color='#dc2626'; status.textContent='error'; });
               }
             </script>
-          <table>
-            <thead><tr><th>Page</th><th>Fans</th><th>Clicks (today / total)</th><th>Messages</th><th>Status</th><th>Mode</th><th>Send Progress</th><th>Quick actions</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>`
+          `
       }
     </div>
 
