@@ -331,6 +331,19 @@ function templatesForSet(lib, setName) {
 // template (photo + title + subtitle + redirect + button together). Otherwise fall
 // back to loose photo pool + redirect set. Honors "different from previous".
 // opts: { photo: true, redirect: true } — which to randomize (default both)
+function pickTemplatePhoto(t) {
+  const pics = (Array.isArray(t.photos) && t.photos.length) ? t.photos : (t.photo ? [t.photo] : []);
+  if (!pics.length) return '';
+  return pics[Math.floor(Math.random() * pics.length)];
+}
+
+function parsePhotos(raw, legacy) {
+  let arr = [];
+  if (raw) { try { const p = JSON.parse(raw); if (Array.isArray(p)) arr = p; } catch (e) {} }
+  if (!arr.length && legacy) arr = [legacy];
+  return arr.map(u => (u || '').trim()).filter(Boolean);
+}
+
 function randomizePage(page, opts = {}) {
   const doPhoto = opts.photo !== false;
   const doRedirect = opts.redirect !== false;
@@ -343,15 +356,16 @@ function randomizePage(page, opts = {}) {
   if (mode === 'templates' && tmpls.length && doPhoto && doRedirect) {
     const chosen = pickRandom(tmpls, (lib.cardTemplates || []).find(t => t.id === page.lastTemplateId));
     if (chosen) {
+      const pic = pickTemplatePhoto(chosen);
       const photos = Array.isArray(page.photos) ? [...page.photos] : [];
-      if (chosen.photo && !photos.includes(chosen.photo)) photos.unshift(chosen.photo);
+      if (pic && !photos.includes(pic)) photos.unshift(pic);
       return updatePage(page.pageId, {
-        currentPhoto: chosen.photo || page.currentPhoto,
+        currentPhoto: pic || page.currentPhoto,
         title: chosen.title || page.title,
         subtitle: chosen.subtitle || page.subtitle,
         buttonText: chosen.buttonText || page.buttonText,
         whatsapp: chosen.redirect || page.whatsapp,
-        lastPhoto: chosen.photo,
+        lastPhoto: pic,
         lastRedirect: chosen.redirect,
         lastTemplateId: chosen.id,
         photos
@@ -1114,10 +1128,14 @@ function renderTemplateManager(req) {
   const sections = setNames.map(setName => {
     const list = templates.filter(t => (t.set || DEFAULT_SET) === setName);
     const color = setName === DEFAULT_SET ? '#3a8dde' : '#f59e0b';
-    const cards = list.map(t => `
-      <div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${color};border-radius:8px;overflow:hidden;">
-        <div style="width:100%;aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;">
+    const cards = list.map(t => {
+      const otherSet = (t.set === SECOND_SET) ? DEFAULT_SET : SECOND_SET;
+      const photoCount = (Array.isArray(t.photos) && t.photos.length) ? t.photos.length : (t.photo ? 1 : 0);
+      return `
+      <div id="tmpl-${t.id}" style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${color};border-radius:8px;overflow:hidden;">
+        <div style="width:100%;aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;position:relative;">
           <img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.style.display='none';this.parentElement.style.color='#94a3b8';this.parentElement.style.fontSize='12px';this.parentElement.textContent='no photo';"/>
+          ${photoCount > 1 ? `<span style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,0.6);color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;">📷 ${photoCount}</span>` : ''}
         </div>
         <div style="padding:10px 12px;">
           <div style="font-weight:600;font-size:14px;color:#1a1d2e;">${esc(t.title || '(no title)')}</div>
@@ -1125,11 +1143,13 @@ function renderTemplateManager(req) {
           <div style="font-size:11px;color:#94a3b8;font-family:monospace;margin-top:4px;word-break:break-all;">🔘 ${esc(t.buttonText)} · 🔗 ${esc((t.redirect || '(no redirect)').replace(/^https?:\/\//, ''))}</div>
           <div style="display:flex;gap:6px;margin-top:10px;">
             <button onclick="editTmpl('${t.id}')" class="qbtn" style="background:#6366f1;flex:1;">✏️ Edit</button>
+            <button type="button" onclick="dupTmpl('${t.id}','${otherSet}')" class="qbtn" style="background:#0ea5e9;" title="Duplicate to ${otherSet}">⧉</button>
             <a href="/template-delete?id=${t.id}" onclick="return confirm('Delete this template?')" class="qbtn" style="background:#dc2626;">🗑️</a>
           </div>
         </div>
       </div>
-      <script>window.__t_${t.id} = ${JSON.stringify(t)};</script>`).join('');
+      <script>window.__t_${t.id} = ${JSON.stringify(t)};</script>`;
+    }).join('');
 
     return `
       <div style="margin-top:18px;">
@@ -1155,7 +1175,7 @@ function renderTemplateManager(req) {
 
     <div class="card" style="border:2px solid #c7d2fe;">
       <h2 id="form-title">➕ Add New Template</h2>
-      <form action="/template-add" method="POST" id="tmpl-form">
+      <form action="/template-add" method="POST" id="tmpl-form" onsubmit="return validateTmplForm();">
         <input type="hidden" name="id" id="f-id" value=""/>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div>
@@ -1169,16 +1189,17 @@ function renderTemplateManager(req) {
         </div>
         <label style="margin-top:10px;display:block;">Card Subtitle</label>
         <input name="subtitle" id="f-subtitle" placeholder="e.g. You just seem like someone interesting, and I'd love to say hello." style="width:100%;"/>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;">
-          <div>
-            <label>Photo URL</label>
-            <input name="photo" id="f-photo" placeholder="https://i.imgur.com/xxxxx.png" style="width:100%;font-family:monospace;font-size:12px;" required/>
-          </div>
-          <div>
-            <label>Button Text</label>
-            <input name="buttonText" id="f-button" placeholder="My Photos 📞" style="width:100%;"/>
-          </div>
+        <div style="margin-top:10px;">
+          <label>Button Text</label>
+          <input name="buttonText" id="f-button" placeholder="My Photos 📞" style="width:100%;"/>
         </div>
+        <label style="margin-top:10px;display:block;">Photos <span style="font-weight:400;color:#94a3b8;font-size:12px;">— add one or more; a random one is sent each time. Title, subtitle &amp; URL stay the same.</span></label>
+        <input type="hidden" name="photos" id="f-photos" value="[]"/>
+        <div style="display:flex;gap:8px;margin-top:4px;">
+          <input type="text" id="f-photo-add" placeholder="https://i.imgur.com/xxxxx.png" style="flex:1;font-family:monospace;font-size:12px;"/>
+          <button type="button" class="btn btn-green" style="white-space:nowrap;" onclick="addPhotoToForm()">+ Add photo</button>
+        </div>
+        <div id="f-photo-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin-top:10px;"></div>
         <label style="margin-top:10px;display:block;">Redirect URL</label>
         <input name="redirect" id="f-redirect" placeholder="https://scrollgallery.com/?p=50328" style="width:100%;font-family:monospace;font-size:12px;"/>
         <div style="margin-top:14px;display:flex;gap:8px;">
@@ -1194,13 +1215,53 @@ function renderTemplateManager(req) {
     </div>
 
     <script>
+      var formPhotos = [];
+      function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+      function renderPhotoGrid() {
+        document.getElementById('f-photos').value = JSON.stringify(formPhotos);
+        var grid = document.getElementById('f-photo-grid');
+        grid.innerHTML = formPhotos.map(function(u, i){
+          return '<div style="position:relative;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">'
+            + '<div style="aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;">'
+            + '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display=\'none\';this.parentElement.style.color=\'#94a3b8\';this.parentElement.style.fontSize=\'10px\';this.parentElement.textContent=\'no img\';"/>'
+            + '</div>'
+            + '<button type="button" aria-label="Remove" onclick="removePhotoFromForm('+i+')" style="position:absolute;top:3px;right:3px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;line-height:1;cursor:pointer;">\u00d7</button>'
+            + '</div>';
+        }).join('') || '<span style="color:#94a3b8;font-size:12px;">No photos added yet.</span>';
+      }
+      function addPhotoToForm() {
+        var inp = document.getElementById('f-photo-add');
+        var v = (inp.value || '').trim();
+        if (!v) return;
+        formPhotos.push(v);
+        inp.value = '';
+        renderPhotoGrid();
+      }
+      function removePhotoFromForm(i) {
+        formPhotos.splice(i, 1);
+        renderPhotoGrid();
+      }
+      function validateTmplForm() {
+        if (!formPhotos.length) { alert('Add at least one photo.'); return false; }
+        return true;
+      }
+      function dupTmpl(id, toSet) {
+        var t = window['__t_' + id];
+        if (!t) return;
+        var url = prompt('Enter the ' + toSet + ' gallery URL for this duplicate:', '');
+        if (url === null) return;
+        url = (url || '').trim();
+        if (!url) { alert('A URL is required to duplicate.'); return; }
+        window.location.href = '/template-duplicate?id=' + encodeURIComponent(id) + '&to=' + encodeURIComponent(toSet) + '&url=' + encodeURIComponent(url);
+      }
       function editTmpl(id) {
         var t = window['__t_' + id];
         if (!t) return;
         document.getElementById('f-id').value = t.id;
         document.getElementById('f-title').value = t.title || '';
         document.getElementById('f-subtitle').value = t.subtitle || '';
-        document.getElementById('f-photo').value = t.photo || '';
+        formPhotos = (Array.isArray(t.photos) && t.photos.length) ? t.photos.slice() : (t.photo ? [t.photo] : []);
+        renderPhotoGrid();
         document.getElementById('f-button').value = t.buttonText || '';
         document.getElementById('f-redirect').value = t.redirect || '';
         document.getElementById('f-set').value = t.set || '${DEFAULT_SET}';
@@ -1217,7 +1278,20 @@ function renderTemplateManager(req) {
         document.getElementById('form-title').textContent = '➕ Add New Template';
         document.getElementById('f-submit').textContent = '➕ Add Template';
         document.getElementById('f-cancel').style.display = 'none';
+        formPhotos = [];
+        renderPhotoGrid();
       }
+      (function(){
+        var nid = new URLSearchParams(location.search).get('new');
+        if (!nid) return;
+        var el = document.getElementById('tmpl-' + nid);
+        if (!el) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.style.transition = 'box-shadow 0.3s';
+        el.style.boxShadow = '0 0 0 3px #6366f1';
+        setTimeout(function(){ el.style.boxShadow = 'none'; }, 2600);
+      })();
+      renderPhotoGrid();
     </script>
   </div>`;
 }
@@ -2290,23 +2364,25 @@ app.post('/set-page-redirect-set', (req, res) => {
 app.post('/template-add', (req, res) => {
   const lib = loadLibrary();
   const b = req.body;
-  if (!b.photo || !b.photo.trim()) {
-    return res.redirect('/?page=templates&error=' + encodeURIComponent('Photo URL is required'));
+  const photos = parsePhotos(b.photos, b.photo);
+  if (!photos.length) {
+    return res.redirect('/?page=templates&error=' + encodeURIComponent('At least one photo is required'));
   }
   const setName = (b.set && lib.redirectSets[b.set]) ? b.set : DEFAULT_SET;
   const tmpl = {
     id: 't' + Date.now() + Math.floor(Math.random() * 1000),
     title: (b.title || '').trim(),
     subtitle: (b.subtitle || '').trim(),
-    photo: b.photo.trim(),
+    photos,
+    photo: photos[0],
     redirect: normalizeUrl(b.redirect || ''),
     buttonText: (b.buttonText || '').trim() || 'My Photos 📞',
     set: setName
   };
   lib.cardTemplates = lib.cardTemplates || [];
-  lib.cardTemplates.push(tmpl);
+  lib.cardTemplates.unshift(tmpl);
   saveLibrary(lib);
-  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Template added to ' + setName));
+  res.redirect('/?page=templates&new=' + tmpl.id + '&lib_msg=' + encodeURIComponent('Template added to ' + setName));
 });
 
 app.post('/template-edit', (req, res) => {
@@ -2316,12 +2392,37 @@ app.post('/template-edit', (req, res) => {
   if (!t) return res.redirect('/?page=templates&error=Template+not+found');
   if (b.title !== undefined) t.title = b.title.trim();
   if (b.subtitle !== undefined) t.subtitle = b.subtitle.trim();
-  if (b.photo && b.photo.trim()) t.photo = b.photo.trim();
+  if (b.photos !== undefined) {
+    const photos = parsePhotos(b.photos, b.photo);
+    if (photos.length) { t.photos = photos; t.photo = photos[0]; }
+  } else if (b.photo && b.photo.trim()) {
+    t.photo = b.photo.trim(); t.photos = [t.photo];
+  }
   if (b.redirect !== undefined) t.redirect = normalizeUrl(b.redirect);
   if (b.buttonText !== undefined) t.buttonText = b.buttonText.trim() || 'My Photos 📞';
   if (b.set && lib.redirectSets[b.set]) t.set = b.set;
   saveLibrary(lib);
   res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Template updated'));
+});
+
+app.get('/template-duplicate', (req, res) => {
+  const lib = loadLibrary();
+  const src = (lib.cardTemplates || []).find(t => t.id === req.query.id);
+  if (!src) return res.redirect('/?page=templates&error=Template+not+found');
+  const toSet = (req.query.to && lib.redirectSets[req.query.to]) ? req.query.to : (src.set === SECOND_SET ? DEFAULT_SET : SECOND_SET);
+  const url = normalizeUrl(req.query.url || '');
+  if (!url) return res.redirect('/?page=templates&error=' + encodeURIComponent('A gallery URL is required to duplicate'));
+  const photos = (Array.isArray(src.photos) && src.photos.length) ? src.photos.slice() : (src.photo ? [src.photo] : []);
+  const dup = {
+    id: 't' + Date.now() + Math.floor(Math.random() * 1000),
+    title: src.title, subtitle: src.subtitle,
+    photos, photo: photos[0] || '',
+    redirect: url, buttonText: src.buttonText, set: toSet
+  };
+  lib.cardTemplates = lib.cardTemplates || [];
+  lib.cardTemplates.unshift(dup);
+  saveLibrary(lib);
+  res.redirect('/?page=templates&new=' + dup.id + '&lib_msg=' + encodeURIComponent('Card duplicated to ' + toSet));
 });
 
 app.get('/template-delete', (req, res) => {
