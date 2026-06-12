@@ -9,7 +9,7 @@ const fs = require('fs');
 const basicAuth = require('express-basic-auth');
 
 const app = express();
-app.use(express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // ============================================
@@ -1520,6 +1520,8 @@ function renderAllPagesView(pages, req) {
               <button type="submit" class="qbtn" style="background:#dc2626;" onclick="return confirm('Reset ALL stats to 0 on all ${pages.length} pages?\\n\\nThis clears clicks, messages sent/failed, and daily history.\\n\\n✅ Fan counts are KEPT.\\n❌ Stats history is permanently erased.')">🗑️ Reset All Stats (keep fans)</button>
             </form>
             <a href="/backup" class="qbtn" style="background:#0f766e;text-decoration:none;display:inline-flex;align-items:center;" title="Download a full backup of all data (pages, templates, fans, stats, settings)">⬇️ Download Backup</a>
+            <button type="button" class="qbtn" style="background:#7c3aed;" onclick="document.getElementById('restore-file').click()" title="Restore all data from a backup file you downloaded">♻️ Restore Backup</button>
+            <input type="file" id="restore-file" accept="application/json,.json" style="display:none;" onchange="restoreBackup(this)"/>
             <span style="font-size:11px;color:#6b7280;margin-left:8px;display:block;width:100%;">— useful before deploying code changes · download a backup anytime</span>
           </div>
           <div style="margin-bottom:12px;padding:12px;background:#faf5ff;border:2px solid #e9d5ff;border-radius:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
@@ -1623,6 +1625,25 @@ function renderAllPagesView(pages, req) {
                 if(!ids.length) return;
                 if(!confirm('Import contacts for ALL '+ids.length+' pages? This can take a while.')) return;
                 importList(ids);
+              }
+              function restoreBackup(input){
+                var file = input.files && input.files[0];
+                if(!file){ return; }
+                if(!confirm('Restore from "'+file.name+'"? This OVERWRITES all current pages, fans, templates, stats and settings with the backup. A safety copy of your current data is saved automatically first. Continue?')){ input.value=''; return; }
+                var reader = new FileReader();
+                reader.onload = function(){
+                  var prog = document.getElementById('imp-progress');
+                  if(prog){ prog.style.color='#6b7280'; prog.textContent='Restoring backup…'; }
+                  fetch('/restore-backup',{method:'POST',headers:{'Content-Type':'application/json'},body:reader.result})
+                    .then(function(r){return r.json();})
+                    .then(function(d){
+                      if(d&&d.ok){ alert('Restore complete — '+d.restored+' files restored. The page will reload now. Tip: redeploy/restart the app so scheduled sends re-arm.'); location.reload(); }
+                      else { alert('Restore failed: '+((d&&d.error)||'unknown error')); if(prog){ prog.textContent=''; } }
+                    })
+                    .catch(function(e){ alert('Restore error: '+e.message); if(prog){ prog.textContent=''; } });
+                  input.value='';
+                };
+                reader.readAsText(file);
               }
             </script>
           `
@@ -2577,7 +2598,7 @@ app.post('/set-page-redirect-set', (req, res) => {
 app.get('/backup', (req, res) => {
   const out = { exportedAt: new Date().toISOString(), dataDir: DATA_DIR, files: {} };
   try {
-    fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json') && f !== 'package.json' && f !== 'package-lock.json').forEach(f => {
+    fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json') && f !== 'package.json' && f !== 'package-lock.json' && !/^prerestore-/.test(f)).forEach(f => {
       const raw = fs.readFileSync(`${DATA_DIR}/${f}`, 'utf8');
       try { out.files[f] = JSON.parse(raw); } catch (e) { out.files[f] = { __unparsed: raw }; }
     });
@@ -2586,6 +2607,36 @@ app.get('/backup', (req, res) => {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="messagebot-backup-${stamp}.json"`);
   res.send(JSON.stringify(out, null, 2));
+});
+
+app.post('/restore-backup', (req, res) => {
+  const body = req.body || {};
+  const files = (body.files && typeof body.files === 'object') ? body.files : null;
+  if (!files || typeof files !== 'object' || Array.isArray(files)) {
+    return res.json({ ok: false, error: 'This does not look like a backup file (no "files" section).' });
+  }
+  const safe = n => /^[\w.\-]+\.json$/.test(n) && n !== 'package.json' && n !== 'package-lock.json' && !/^prerestore-/.test(n);
+  const names = Object.keys(files).filter(safe);
+  if (!names.length) return res.json({ ok: false, error: 'No restorable data found in this file.' });
+  // Safety: snapshot CURRENT data before overwriting, so nothing is lost
+  try {
+    const snap = { exportedAt: new Date().toISOString(), files: {} };
+    fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json') && safe(f)).forEach(f => {
+      try { snap.files[f] = JSON.parse(fs.readFileSync(`${DATA_DIR}/${f}`, 'utf8')); } catch (e) {}
+    });
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    fs.writeFileSync(`${DATA_DIR}/prerestore-${stamp}.json`, JSON.stringify(snap));
+  } catch (e) {}
+  let restored = 0; const skipped = [];
+  names.forEach(name => {
+    try {
+      const v = files[name];
+      const content = (v && v.__unparsed !== undefined) ? v.__unparsed : JSON.stringify(v, null, 2);
+      fs.writeFileSync(`${DATA_DIR}/${name}`, content);
+      restored++;
+    } catch (e) { skipped.push(name); }
+  });
+  res.json({ ok: true, restored, skipped });
 });
 
 app.post('/upload-image', async (req, res) => {
