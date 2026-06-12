@@ -1217,13 +1217,14 @@ function renderTemplateManager(req) {
     <script>
       var formPhotos = [];
       function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+      function imgFail(el){ el.style.display='none'; var p=el.parentElement; p.style.color='#94a3b8'; p.style.fontSize='10px'; p.textContent='no img'; }
       function renderPhotoGrid() {
         document.getElementById('f-photos').value = JSON.stringify(formPhotos);
         var grid = document.getElementById('f-photo-grid');
         grid.innerHTML = formPhotos.map(function(u, i){
           return '<div style="position:relative;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">'
             + '<div style="aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;">'
-            + '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display=\'none\';this.parentElement.style.color=\'#94a3b8\';this.parentElement.style.fontSize=\'10px\';this.parentElement.textContent=\'no img\';"/>'
+            + '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;" onerror=\"imgFail(this)\"/>'
             + '</div>'
             + '<button type="button" aria-label="Remove" onclick="removePhotoFromForm('+i+')" style="position:absolute;top:3px;right:3px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;line-height:1;cursor:pointer;">\u00d7</button>'
             + '</div>';
