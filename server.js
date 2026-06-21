@@ -54,8 +54,9 @@ function getDefaults() {
     buttonText: process.env.DEFAULT_BUTTON_TEXT || 'My Photos 📞',
     broadcastTime: process.env.DEFAULT_BROADCAST_TIME || '07:30',
     timezone: process.env.DEFAULT_TIMEZONE || 'UTC',
-    broadcastEnabled: process.env.DEFAULT_BROADCAST_ENABLED !== 'false',
-    spacingSeconds: parseInt(process.env.DEFAULT_SPACING_SECONDS) || 10
+    broadcastEnabled: false,        // NEW DEFAULT: paused
+    spacingSeconds: parseInt(process.env.DEFAULT_SPACING_SECONDS) || 10,
+    cleanupThreshold: 0             // NEW DEFAULT: disabled (never remove fans)
   };
 }
 
@@ -97,11 +98,12 @@ function addPage(data) {
     currentPhoto: data.currentPhoto || photos[0],
     broadcastTime: data.broadcastTime || d.broadcastTime,
     timezone: data.timezone || d.timezone,
-    broadcastEnabled: data.broadcastEnabled !== undefined ? data.broadcastEnabled : d.broadcastEnabled,
+    broadcastEnabled: false,         // always paused on creation
     sendNowEnabled: data.sendNowEnabled !== undefined ? data.sendNowEnabled : true,
     spacingSeconds: data.spacingSeconds || d.spacingSeconds,
-    cleanupThreshold: data.cleanupThreshold !== undefined ? data.cleanupThreshold : 1,
+    cleanupThreshold: 0,             // always disabled on creation
     baselineFans: data.baselineFans || 0,
+    group: data.group || '',         // PAGE GROUP (e.g. "Part 1", "Part 2")
     createdAt: new Date().toISOString()
   };
   pages.push(newPage);
@@ -116,27 +118,33 @@ function removePage(pageId) {
 }
 
 // ============================================
+// PAGE GROUPS HELPERS
+// ============================================
+// Returns sorted unique group names from all pages (excluding empty)
+function getAllGroups(pages) {
+  pages = pages || loadPages();
+  const names = [...new Set(pages.map(p => (p.group || '').trim()).filter(Boolean))];
+  return names.sort();
+}
+
+// ============================================
 // SHARED LIBRARY (library.json on volume)
-// One global pool of photos + redirect URLs, shared by ALL pages.
-// Add/remove from main dashboard → instantly available everywhere.
 // ============================================
 const LIBRARY_FILE = `${DATA_DIR}/library.json`;
 
 // ============================================
-// GLOBAL SETTINGS (settings.json) — small key/value store
+// GLOBAL SETTINGS (settings.json)
 // ============================================
 const SETTINGS_FILE = `${DATA_DIR}/settings.json`;
 function loadSettings() {
   try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); }
-  catch { return { contentMode: 'classic' }; } // default: classic
+  catch { return { contentMode: 'classic' }; }
 }
 function saveSettings(s) { fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2)); }
 function getGlobalContentMode() {
   const s = loadSettings();
   return s.contentMode === 'templates' ? 'templates' : 'classic';
 }
-// Resolve a page's effective content mode: page override, else global default.
-// page.contentMode can be 'classic', 'templates', or undefined/'global' (use global).
 function pageContentMode(page) {
   if (page && (page.contentMode === 'classic' || page.contentMode === 'templates')) {
     return page.contentMode;
@@ -144,13 +152,12 @@ function pageContentMode(page) {
   return getGlobalContentMode();
 }
 
-
 function normalizeUrl(u) {
   u = (u || '').trim();
   if (!u) return u;
-  if (/^https?:\/\//i.test(u)) return u;   // already has http:// or https://
-  if (u.indexOf('//') === 0) return 'https:' + u; // protocol-relative //host
-  return 'https://' + u;                    // bare domain -> add https://
+  if (/^https?:\/\//i.test(u)) return u;
+  if (u.indexOf('//') === 0) return 'https:' + u;
+  return 'https://' + u;
 }
 
 function getMasterRedirect() {
@@ -211,8 +218,6 @@ const LIBRARY_SEED_PHOTOS = [
   'https://i.imgur.com/MHT57vc.png'
 ];
 
-// Redirect Sets: named pools of redirect URLs. Each page is assigned to one set.
-// Photos stay in ONE shared pool (all pages). Only redirects are split by set.
 const DEFAULT_SET = 'Scrollgallery';
 const SECOND_SET = 'TheViralBox';
 
@@ -266,7 +271,6 @@ function loadLibrary() {
   try {
     lib = JSON.parse(fs.readFileSync(LIBRARY_FILE, 'utf8'));
   } catch {
-    // First run — seed
     const seed = {
       photos: [...LIBRARY_SEED_PHOTOS],
       redirectSets: JSON.parse(JSON.stringify(LIBRARY_SEED_REDIRECT_SETS)),
@@ -275,36 +279,29 @@ function loadLibrary() {
     try { saveLibrary(seed); } catch {}
     return seed;
   }
-  // Normalize + migrate older formats
   const photos = Array.isArray(lib.photos) ? lib.photos : [];
   let redirectSets = lib.redirectSets && typeof lib.redirectSets === 'object' ? lib.redirectSets : null;
   if (!redirectSets) {
-    // Migrate old flat `redirects` array → wrap into the default set
     const oldFlat = Array.isArray(lib.redirects) ? lib.redirects : [];
     redirectSets = { [DEFAULT_SET]: oldFlat, [SECOND_SET]: [] };
   }
-  // Guarantee both default sets always exist
   if (!Array.isArray(redirectSets[DEFAULT_SET])) redirectSets[DEFAULT_SET] = [];
   if (!Array.isArray(redirectSets[SECOND_SET])) redirectSets[SECOND_SET] = [];
   const cardTemplates = Array.isArray(lib.cardTemplates) ? lib.cardTemplates : [];
   const normalized = { photos, redirectSets, cardTemplates };
-  // Persist migration if shape changed
   if (!lib.redirectSets || !lib.cardTemplates) { try { saveLibrary(normalized); } catch {} }
   return normalized;
 }
 function saveLibrary(lib) {
   fs.writeFileSync(LIBRARY_FILE, JSON.stringify(lib, null, 2));
 }
-// Return the list of set names (ordered, defaults first)
 function getSetNames(lib) {
   lib = lib || loadLibrary();
   const names = Object.keys(lib.redirectSets);
-  // Ensure default sets lead the list
   const ordered = [DEFAULT_SET, SECOND_SET].filter(n => names.includes(n));
   names.forEach(n => { if (!ordered.includes(n)) ordered.push(n); });
   return ordered;
 }
-// Resolve which set a page uses (default if unset/invalid)
 function pageSet(page, lib) {
   lib = lib || loadLibrary();
   const s = page.redirectSet;
@@ -312,7 +309,6 @@ function pageSet(page, lib) {
   return DEFAULT_SET;
 }
 
-// Pick a random item from arr that isn't `avoid` (when possible)
 function pickRandom(arr, avoid) {
   if (!arr || arr.length === 0) return undefined;
   if (arr.length === 1) return arr[0];
@@ -321,16 +317,11 @@ function pickRandom(arr, avoid) {
   return choices[Math.floor(Math.random() * choices.length)];
 }
 
-// Templates tagged for a given set
 function templatesForSet(lib, setName) {
   lib = lib || loadLibrary();
   return (lib.cardTemplates || []).filter(t => (t.set || DEFAULT_SET) === setName);
 }
 
-// Randomize one page. If card templates exist for the page's set, pick a COMPLETE
-// template (photo + title + subtitle + redirect + button together). Otherwise fall
-// back to loose photo pool + redirect set. Honors "different from previous".
-// opts: { photo: true, redirect: true } — which to randomize (default both)
 function pickTemplatePhoto(t) {
   const pics = (Array.isArray(t.photos) && t.photos.length) ? t.photos : (t.photo ? [t.photo] : []);
   if (!pics.length) return '';
@@ -351,7 +342,6 @@ function randomizePage(page, opts = {}) {
   const setName = pageSet(page, lib);
   const tmpls = templatesForSet(lib, setName).filter(t => t.active !== false);
 
-  // TEMPLATE MODE: only if this page's content mode is 'templates' AND a full randomize
   const mode = pageContentMode(page);
   if (mode === 'templates' && tmpls.length && doPhoto && doRedirect) {
     const chosen = pickRandom(tmpls, (lib.cardTemplates || []).find(t => t.id === page.lastTemplateId));
@@ -373,7 +363,6 @@ function randomizePage(page, opts = {}) {
     }
   }
 
-  // FALLBACK MODE: loose photo pool + redirect set (no templates, or partial randomize)
   const updates = {};
   if (doPhoto && lib.photos.length) {
     const newPhoto = pickRandom(lib.photos, page.lastPhoto || page.currentPhoto);
@@ -423,28 +412,22 @@ function saveFan(pageId, psid) {
   }
 }
 
-// Track a send failure for a fan, increment their consecutive-failure counter.
-// Only remove the fan if their counter reaches the page's cleanupThreshold.
-// This protects against FB's "outside 24h window" false negatives — some fans
-// (admins, testers, very active users) can receive messages even when FB returns
-// error code 10. Requiring N consecutive failures avoids removing those fans.
 function trackFailureForFan(pageId, psid, reason) {
   const page = getPage(pageId);
   const threshold = (page && page.cleanupThreshold !== undefined) ? page.cleanupThreshold : 1;
-  if (threshold === 0) return; // auto-cleanup disabled
+  if (threshold === 0) return;
   const s = loadStats(pageId);
   s.fanFailures = s.fanFailures || {};
   s.fanFailures[psid] = (s.fanFailures[psid] || 0) + 1;
   const count = s.fanFailures[psid];
   if (count >= threshold) {
-    // Remove the fan
     const fans = loadFans(pageId);
     const filtered = fans.filter(p => p !== psid);
     if (filtered.length !== fans.length) {
       saveFansList(pageId, filtered);
       s.removedFans = s.removedFans || [];
       s.removedFans.push({ psid, reason: `${count} consecutive failures: ${reason || 'unreachable'}`, time: new Date().toISOString() });
-      delete s.fanFailures[psid]; // clear counter
+      delete s.fanFailures[psid];
       console.log(`[${pageId}] Auto-removed fan ${psid} after ${count} failures (${reason}) | Remaining: ${filtered.length}`);
     }
   } else {
@@ -453,8 +436,6 @@ function trackFailureForFan(pageId, psid, reason) {
   saveStats(pageId, s);
 }
 
-// Reset a fan's failure counter when they successfully receive a message.
-// This is critical: a single success "saves" them from being removed.
 function clearFailuresForFan(pageId, psid) {
   const s = loadStats(pageId);
   if (s.fanFailures && s.fanFailures[psid]) {
@@ -463,7 +444,6 @@ function clearFailuresForFan(pageId, psid) {
   }
 }
 
-// Legacy helper kept for compatibility (manual remove from dashboard)
 function removeFan(pageId, psid, reason) {
   const fans = loadFans(pageId);
   const filtered = fans.filter(p => p !== psid);
@@ -488,8 +468,6 @@ function loadStats(pageId) {
   }
 }
 function saveStats(pageId, s) { fs.writeFileSync(statsFile(pageId), JSON.stringify(s)); }
-// Reset all stats (clicks, sent, failed, reads, deliveries, daily history) to zero.
-// Does NOT touch the fan list (fans-{pageId}.json) or baselineFans.
 function resetStats(pageId) {
   saveStats(pageId, { clicks: [], messagesSent: 0, messagesFailed: 0, fansAdded: [], reads: [], readers: [], deliveries: [], delivered: [], dailyMessages: {} });
 }
@@ -503,7 +481,6 @@ function trackMessage(pageId, success) {
   const s = loadStats(pageId);
   if (success) s.messagesSent = (s.messagesSent || 0) + 1;
   else s.messagesFailed = (s.messagesFailed || 0) + 1;
-  // Daily breakdown
   s.dailyMessages = s.dailyMessages || {};
   const today = todayDate();
   s.dailyMessages[today] = s.dailyMessages[today] || { sent: 0, failed: 0 };
@@ -558,7 +535,6 @@ function getRotatingSubtitle() {
   return DAILY_SUBTITLES[day % DAILY_SUBTITLES.length];
 }
 
-// Spacing dropdown helper
 const SPACING_PRESETS = [2, 5, 10, 15, 18, 30, 60];
 function spacingLabel(s) {
   const perHr = Math.floor(3600 / s);
@@ -580,7 +556,6 @@ function renderSpacingSelect(name, selected) {
   }</select>`;
 }
 
-// Daily message stats helper
 function todayDate() {
   return new Date().toISOString().split('T')[0];
 }
@@ -634,7 +609,7 @@ function setupMessenger(page) {
 function sendCard(page, psid, opts = {}) {
   const rawDest = normalizeUrl(opts.redirect || page.whatsapp || '');
   const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}`
-    + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');  // frozen per-card link
+    + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
   const title = opts.title || page.title;
   const subtitle = opts.subtitle || page.subtitle;
   const photo = opts.photo || getCurrentPhoto(page);
@@ -663,9 +638,6 @@ function sendCard(page, psid, opts = {}) {
       const code = data.error.code;
       const msg = data.error.message || '';
       console.log(`[${page.label}] Card failed (psid ${psid}, code ${code}):`, msg);
-      // Track failure: only auto-remove fan after N consecutive failures
-      // (default 3). Protects against FB's "outside 24h window" false negatives.
-      // Match by error code primarily; regex on text as a backup in case FB rewords.
       const unreachable =
         code === 10 || code === 100 || code === 551 ||
         /outside [\w\s]*allowed window/i.test(msg) ||
@@ -677,7 +649,6 @@ function sendCard(page, psid, opts = {}) {
       }
     } else {
       trackMessage(page.pageId, true);
-      // Successful send — reset failure counter for this fan
       clearFailuresForFan(page.pageId, psid);
     }
     return data;
@@ -689,10 +660,9 @@ function sendCard(page, psid, opts = {}) {
 }
 
 // ============================================
-// BROADCAST PROGRESS TRACKER (in-memory only)
-// Tracks live progress + completion per page. Resets on redeploy (so does the broadcast).
+// BROADCAST PROGRESS TRACKER
 // ============================================
-const broadcastProgress = {}; // pageId -> { total, done, failed, startedAt, finishedAt, type, status }
+const broadcastProgress = {};
 
 function startBroadcastTracking(pageId, total, type) {
   broadcastProgress[pageId] = {
@@ -725,10 +695,6 @@ function broadcastToPage(page, opts = {}) {
   return fans.length;
 }
 
-// ============================================
-// PLAIN TEXT MESSAGES (Template 2 — no card, just text)
-// Same failure-tracking and auto-cleanup logic as sendCard.
-// ============================================
 function sendText(page, psid, text, opts = {}) {
   return fetch(`https://graph.facebook.com/v2.6/me/messages?access_token=${page.accessToken}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -777,24 +743,21 @@ function broadcastTextToPage(page, text, opts = {}) {
 }
 
 // ============================================
-// PUBLIC ROUTES — no auth (Facebook + fans hit these)
+// PUBLIC ROUTES — no auth
 // ============================================
-
-// Webhook verification (Facebook → bot handshake)
 app.get('/webhook', (req, res) => {
   if (req.query['hub.verify_token'] === VERIFY_TOKEN) {
     res.status(200).send(req.query['hub.challenge']);
   } else res.sendStatus(403);
 });
 
-// Webhook receiver — routes by entry.id to the right page
 app.post('/webhook', (req, res) => {
   if (req.body.object !== 'page') return res.sendStatus(404);
   req.body.entry.forEach(entry => {
     const pageId = entry.id;
     const page = getPage(pageId);
     if (!page) {
-      console.warn(`Webhook received for unknown page ${pageId} — add it to messagebot or it will be ignored`);
+      console.warn(`Webhook received for unknown page ${pageId}`);
       return;
     }
     (entry.messaging || []).forEach(event => {
@@ -814,32 +777,27 @@ app.post('/webhook', (req, res) => {
   res.status(200).send('EVENT_RECEIVED');
 });
 
-// Click tracker — routes by pageId to the right WhatsApp URL
-// Redirect-first design: fan gets redirected immediately, tracking happens after.
-// If tracking fails for any reason, fan experience is unaffected.
 app.get('/track', (req, res) => {
   const pageId = req.query.pageId;
   const psid = req.query.psid || 'unknown';
   const page = getPage(pageId);
   const mr = getMasterRedirect();
   let dest;
-  if (mr.enabled && mr.url) dest = mr.url;            // master override wins
-  else if (req.query.d) dest = req.query.d;            // frozen per-card link (new cards)
-  else dest = page ? page.whatsapp : getDefaults().whatsapp; // old cards: current page url
+  if (mr.enabled && mr.url) dest = mr.url;
+  else if (req.query.d) dest = req.query.d;
+  else dest = page ? page.whatsapp : getDefaults().whatsapp;
   dest = normalizeUrl(dest);
-  // Send the redirect FIRST so the fan never waits on disk I/O or tracking errors
   res.redirect(dest);
-  // Track in background (fire-and-forget), errors logged but don't block fan
   if (page) {
     setImmediate(() => {
       try { trackClick(pageId, psid); }
-      catch (e) { console.error(`[${page.label}] Click tracking failed (fan was redirected ok):`, e.message); }
+      catch (e) { console.error(`[${page.label}] Click tracking failed:`, e.message); }
     });
   }
 });
 
 // ============================================
-// 🔒 AUTH WALL — everything below requires login
+// 🔒 AUTH WALL
 // ============================================
 app.use(basicAuth({
   users: { [ADMIN_USER]: ADMIN_PASS },
@@ -848,7 +806,7 @@ app.use(basicAuth({
 }));
 
 // ============================================
-// DASHBOARD
+// CSS
 // ============================================
 const CSS = `
   * { box-sizing: border-box; }
@@ -920,6 +878,8 @@ const CSS = `
   details > summary:hover { background: #fffbeb; }
   details { margin: 10px 0; }
   summary { cursor: pointer; font-weight: 600; color: #4a5568; padding: 6px 0; }
+  .group-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; background: #ede9fe; color: #6d28d9; }
+  .group-badge.unassigned { background: #f1f5f9; color: #94a3b8; }
 `;
 
 function renderHead(title) {
@@ -956,6 +916,129 @@ function renderAlerts(req) {
   return alerts;
 }
 
+// ============================================
+// PAGE GROUPS MANAGER SECTION (rendered on All Pages view)
+// ============================================
+function renderGroupManager(pages) {
+  const groups = getAllGroups(pages);
+  const unassigned = pages.filter(p => !p.group || !p.group.trim());
+
+  // Summary pills
+  const pills = groups.map(g => {
+    const count = pages.filter(p => p.group === g).length;
+    const fans = pages.filter(p => p.group === g).reduce((acc, p) => acc + loadFans(p.pageId).length, 0);
+    return `<div style="background:#ede9fe;border:1px solid #c4b5fd;border-radius:8px;padding:10px 14px;display:inline-flex;align-items:center;gap:10px;">
+      <div>
+        <div style="font-weight:700;color:#6d28d9;font-size:14px;">${esc(g)}</div>
+        <div style="font-size:11px;color:#7c3aed;">${count} pages · ${fans} fans</div>
+      </div>
+      <form action="/group-delete" method="POST" style="margin:0;">
+        <input type="hidden" name="group" value="${esc(g)}"/>
+        <button type="submit" title="Delete group (pages stay, just unassigned)" onclick="return confirm('Delete group &quot;${esc(g)}&quot;? Pages will become unassigned.')" style="background:none;border:none;cursor:pointer;color:#dc2626;font-size:16px;padding:0;">×</button>
+      </form>
+    </div>`;
+  }).join('');
+
+  // Per-page group assignment table
+  const rows = pages.map(p => {
+    const groupOpts = ['', ...groups].map(g =>
+      `<option value="${esc(g)}" ${(p.group || '') === g ? 'selected' : ''}>${g || '— unassigned —'}</option>`
+    ).join('');
+    return `<tr>
+      <td><strong>${esc(p.label)}</strong><br/><span style="font-size:11px;color:#6b7280;">${esc(p.pageId)}</span></td>
+      <td>
+        <form action="/group-assign" method="POST" style="margin:0;display:flex;gap:6px;align-items:center;">
+          <input type="hidden" name="pageId" value="${esc(p.pageId)}"/>
+          <select name="group" style="padding:5px 8px;font-size:13px;border:1px solid #cbd5e1;border-radius:5px;width:auto;">
+            ${groupOpts}
+          </select>
+          <button type="submit" class="qbtn" style="background:#6d28d9;">✓ Save</button>
+        </form>
+      </td>
+      <td><span class="group-badge ${p.group ? '' : 'unassigned'}">${esc(p.group || 'unassigned')}</span></td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div class="card" style="border:2px solid #c4b5fd;">
+      <h2>📦 Page Groups <span style="font-size:12px;font-weight:400;color:#7c3aed;">— send to Part 1, Part 2, Part 3 separately or all at once</span></h2>
+      <p style="color:#6b7280;font-size:13px;">Assign pages to groups so you can Send Now to one group at a time. Create a group by typing a name below, then assign pages to it.</p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
+        ${pills || '<span style="color:#94a3b8;font-size:13px;">No groups yet — create one below.</span>'}
+        ${unassigned.length ? `<div style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;display:inline-flex;align-items:center;">
+          <div style="font-size:13px;color:#94a3b8;">⬜ Unassigned: <strong>${unassigned.length} pages</strong></div>
+        </div>` : ''}
+      </div>
+
+      <form action="/group-create" method="POST" style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+        <input type="text" name="group" placeholder='New group name, e.g. "Part 1"' style="flex:1;min-width:200px;max-width:320px;padding:8px 12px;border:1px solid #c4b5fd;border-radius:6px;font-size:14px;"/>
+        <button type="submit" class="btn" style="background:#6d28d9;color:#fff;margin-top:0;">➕ Create Group</button>
+      </form>
+
+      <details>
+        <summary style="cursor:pointer;font-weight:600;color:#6d28d9;padding:6px 0;">▶ Assign pages to groups (${pages.length} pages)</summary>
+        <table style="margin-top:10px;">
+          <thead><tr><th>Page</th><th>Assign to Group</th><th>Current Group</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </details>
+    </div>`;
+}
+
+// ============================================
+// SEND NOW GROUP SELECTOR (rendered above the pages table)
+// ============================================
+function renderGroupSendNow(pages) {
+  const groups = getAllGroups(pages);
+  const eligibleAll = pages.filter(p => p.sendNowEnabled !== false);
+
+  const groupOptions = groups.map(g => {
+    const gPages = pages.filter(p => p.group === g && p.sendNowEnabled !== false);
+    const totalFans = gPages.reduce((acc, p) => acc + loadFans(p.pageId).length, 0);
+    return `<option value="${esc(g)}">${esc(g)} — ${gPages.length} pages · ${totalFans} fans</option>`;
+  }).join('');
+
+  const allFans = eligibleAll.reduce((acc, p) => acc + loadFans(p.pageId).length, 0);
+
+  return `
+    <div style="margin-bottom:12px;padding:14px;background:#f0fdf4;border:2px solid #86efac;border-radius:8px;">
+      <div style="font-size:13px;font-weight:700;color:#166534;margin-bottom:10px;">📣 Send Now <span style="font-weight:400;color:#16a34a;">— choose a group or send to all eligible pages</span></div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+        <!-- GROUP SEND -->
+        ${groups.length > 0 ? `
+        <form action="/send-now-group" method="POST" style="display:inline;margin:0;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <select name="group" style="padding:7px 10px;border:1px solid #86efac;border-radius:6px;font-size:13px;background:#fff;color:#166534;font-weight:600;">
+              ${groupOptions}
+            </select>
+            <button type="submit" class="qbtn" style="background:#16a34a;" onclick="return confirm('Send Now to selected group?')">📣 Send to Group</button>
+            <button type="submit" name="randomize" value="1" class="qbtn" style="background:#7c3aed;" onclick="return confirm('Randomize + Send to selected group?')">🎲📣 Randomize + Send Group</button>
+          </div>
+        </form>
+        <span style="color:#cbd5e1;font-size:18px;">|</span>` : ''}
+
+        <!-- SEND ALL -->
+        <form action="/send-now-all" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#166534;" onclick="return confirm('SEND NOW to ALL eligible pages (${eligibleAll.length} pages · ${allFans} fans)?\\n\\nPages with Send Now PAUSED are skipped.')">📣 Send All (${eligibleAll.length} pages)</button>
+        </form>
+        <form action="/send-now-all?randomize=1" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#5b21b6;" onclick="return confirm('RANDOMIZE + SEND to ALL eligible pages (${eligibleAll.length} pages)?')">🎲📣 Randomize + Send All</button>
+        </form>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <form action="/pause-sendnow-all" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#f59e0b;" onclick="return confirm('Pause Send Now on ALL pages?')">🚫 Pause Send Now (All)</button>
+        </form>
+        <form action="/resume-sendnow-all" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#16a34a;" onclick="return confirm('Resume Send Now on ALL pages?')">✅ Resume Send Now (All)</button>
+        </form>
+      </div>
+    </div>`;
+}
+
 function renderPageLibrarySection(page) {
   const lib = loadLibrary();
   const pid = esc(page.pageId);
@@ -980,7 +1063,6 @@ function renderPageLibrarySection(page) {
     </a>`;
   }).join('');
 
-  // Set-assignment buttons (one per set)
   const setButtons = setNames.map(name => {
     const isCurrent = name === currentSet;
     const count = (lib.redirectSets[name] || []).length;
@@ -997,11 +1079,9 @@ function renderPageLibrarySection(page) {
       <h2>🎲 Quick Switch &amp; Randomize <span style="font-size:12px;font-weight:400;color:#8b5cf6;">— photo pool shared · redirect by set</span></h2>
 
       <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:12px;margin-bottom:16px;">
-        <div style="font-size:13px;font-weight:600;color:#065f46;margin-bottom:8px;">🌐 Redirect Set for this page — randomize pulls URLs ONLY from the selected set:</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          ${setButtons}
-        </div>
-        <div style="font-size:11px;color:#047857;margin-top:8px;">Currently using: <strong>${esc(currentSet)}</strong> — randomize + "tap a URL" below both use this set's URLs only.</div>
+        <div style="font-size:13px;font-weight:600;color:#065f46;margin-bottom:8px;">🌐 Redirect Set for this page:</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">${setButtons}</div>
+        <div style="font-size:11px;color:#047857;margin-top:8px;">Currently using: <strong>${esc(currentSet)}</strong></div>
       </div>
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
@@ -1043,15 +1123,14 @@ function renderPageLibrarySection(page) {
 
       <h3 style="font-size:14px;color:#1a1d2e;margin:0 0 8px;">📸 Tap a photo to set active (${lib.photos.length} — shared pool)</h3>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(85px,1fr));gap:8px;margin-bottom:16px;">
-        ${photoThumbs || '<span style="color:#94a3b8;font-size:12px;">Library empty — add photos on the main dashboard.</span>'}
+        ${photoThumbs || '<span style="color:#94a3b8;font-size:12px;">Library empty.</span>'}
       </div>
 
       <h3 style="font-size:14px;color:#1a1d2e;margin:0 0 8px;">🔗 Tap a URL to set active — from "${esc(currentSet)}" set (${pool.length})</h3>
       <div style="display:flex;flex-wrap:wrap;gap:6px;">
-        ${redirectBtns || '<span style="color:#94a3b8;font-size:12px;">This set is empty — add URLs to it on the main dashboard.</span>'}
+        ${redirectBtns || '<span style="color:#94a3b8;font-size:12px;">This set is empty.</span>'}
       </div>
-
-      <div class="helper" style="margin-top:12px;">Photos are shared by all pages. Redirect URLs come from this page's assigned set. To edit the pools, use the 🗂️ Shared Library on the <a href="/?page=all">main dashboard</a>.</div>
+      <div class="helper" style="margin-top:12px;">Photos are shared by all pages. Redirect URLs come from this page's assigned set.</div>
     </div>`;
 }
 
@@ -1061,19 +1140,18 @@ function renderLibraryManager() {
     <div style="position:relative;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff;">
       <img src="${esc(url)}" style="width:100%;height:80px;object-fit:cover;display:block;" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"/>
       <div style="display:none;width:100%;height:80px;align-items:center;justify-content:center;background:#f1f5f9;color:#94a3b8;font-size:10px;text-align:center;padding:4px;">${esc(url.split('/').pop())}</div>
-      <a href="/library-remove-photo?index=${i}" onclick="return confirm('Remove this photo from the shared library? It stays on pages already using it.')" style="position:absolute;top:3px;right:3px;background:rgba(220,38,38,0.9);color:#fff;width:18px;height:18px;border-radius:50%;font-size:11px;line-height:18px;text-align:center;text-decoration:none;">×</a>
+      <a href="/library-remove-photo?index=${i}" onclick="return confirm('Remove this photo from the shared library?')" style="position:absolute;top:3px;right:3px;background:rgba(220,38,38,0.9);color:#fff;width:18px;height:18px;border-radius:50%;font-size:11px;line-height:18px;text-align:center;text-decoration:none;">×</a>
       <div style="font-size:9px;color:#94a3b8;text-align:center;padding:2px;">#${i + 1}</div>
     </div>`).join('');
 
   const setNames = getSetNames(lib);
-  // Build a section per redirect set
   const setSections = setNames.map(name => {
     const urls = lib.redirectSets[name] || [];
     const chips = urls.map((url, i) => {
       const short = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
       return `<div style="display:inline-flex;align-items:center;gap:4px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:4px 8px;font-size:11px;font-family:monospace;">
         <span style="color:#475569;">${esc(short)}</span>
-        <a href="/library-remove-redirect?set=${encodeURIComponent(name)}&index=${i}" onclick="return confirm('Remove this URL from the ${esc(name)} set?')" style="color:#dc2626;text-decoration:none;font-weight:700;">×</a>
+        <a href="/library-remove-redirect?set=${encodeURIComponent(name)}&index=${i}" onclick="return confirm('Remove this URL?')" style="color:#dc2626;text-decoration:none;font-weight:700;">×</a>
       </div>`;
     }).join('');
     const color = name === DEFAULT_SET ? '#3a8dde' : '#f59e0b';
@@ -1093,25 +1171,19 @@ function renderLibraryManager() {
 
   return `
     <div class="card" style="border:2px solid #ede9fe;">
-      <h2>🗂️ Shared Library <span style="font-size:12px;font-weight:400;color:#8b5cf6;">— available on every page</span></h2>
-      <p style="color:#6b7280;font-size:13px;">Add photos and redirect URLs here once. They appear on <strong>all pages</strong> for one-click "set active" and feed the 🎲 randomizer. Edits here update every page instantly.</p>
-
+      <h2>🗂️ Shared Library</h2>
       <div style="margin-top:16px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <h3 style="margin:0;font-size:14px;color:#1a1d2e;">📸 Shared Photos (${lib.photos.length})</h3>
-        </div>
+        <h3 style="margin:0 0 8px;font-size:14px;">📸 Shared Photos (${lib.photos.length})</h3>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;margin-bottom:10px;">
           ${photoChips || '<span style="color:#94a3b8;font-size:12px;">No photos yet.</span>'}
         </div>
         <form action="/library-add-photo" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
-          <textarea name="photoUrls" placeholder="Paste one or more image URLs (one per line or comma-separated)&#10;https://i.imgur.com/xxxxx.png" style="flex:1;min-width:260px;min-height:48px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:monospace;font-size:12px;"></textarea>
+          <textarea name="photoUrls" placeholder="Paste one or more image URLs (one per line or comma-separated)" style="flex:1;min-width:260px;min-height:48px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:monospace;font-size:12px;"></textarea>
           <button type="submit" class="btn btn-green" style="white-space:nowrap;">+ Add Photo(s)</button>
         </form>
       </div>
-
       <div style="margin-top:20px;border-top:1px solid #f1f5f9;padding-top:16px;">
-        <h3 style="margin:0 0 4px;font-size:14px;color:#1a1d2e;">🔗 Redirect Sets</h3>
-        <p style="font-size:12px;color:#6b7280;margin:0 0 4px;">Each page is assigned to ONE set. When randomizing, a page only picks URLs from its assigned set. Assign a page to a set on that page's dashboard.</p>
+        <h3 style="margin:0 0 4px;font-size:14px;">🔗 Redirect Sets</h3>
         ${setSections}
       </div>
     </div>`;
@@ -1121,10 +1193,8 @@ function renderTemplateManager(req) {
   const lib = loadLibrary();
   const setNames = getSetNames(lib);
   const templates = lib.cardTemplates || [];
-
   const setOptions = setNames.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
 
-  // Group templates by set for display
   const sections = setNames.map(setName => {
     const list = templates.filter(t => (t.set || DEFAULT_SET) === setName);
     const color = setName === DEFAULT_SET ? '#3a8dde' : '#f59e0b';
@@ -1132,21 +1202,32 @@ function renderTemplateManager(req) {
       const otherSet = (t.set === SECOND_SET) ? DEFAULT_SET : SECOND_SET;
       const photoCount = (Array.isArray(t.photos) && t.photos.length) ? t.photos.length : (t.photo ? 1 : 0);
       const isActive = t.active !== false;
+      const isLinked = !!t.linkedId;
+      const partner = isLinked ? templates.find(x => x.id === t.linkedId) : null;
+      const linkedBadge = isLinked
+        ? `<div style="background:#dcfce7;border:1px solid #86efac;border-radius:5px;padding:3px 7px;font-size:10px;font-weight:700;color:#166534;margin-bottom:6px;display:flex;align-items:center;gap:4px;">
+            🔗 Linked to ${esc(otherSet)} ${partner ? '· <em style="font-weight:400;">' + esc(partner.title || partner.id) + '</em>' : '· (partner missing)'}
+            <a href="/template-unlink?id=${t.id}" onclick="return confirm('Unlink this pair? Both cards become independent — edits will no longer sync.')" style="margin-left:auto;color:#dc2626;text-decoration:none;font-weight:700;font-size:12px;" title="Unlink">✕</a>
+           </div>`
+        : `<div style="background:#f1f5f9;border-radius:5px;padding:3px 7px;font-size:10px;color:#94a3b8;margin-bottom:6px;">⬜ Not linked — edits only affect this card</div>`;
       return `
       <div id="tmpl-${t.id}" style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${color};border-radius:8px;overflow:hidden;${isActive ? '' : 'opacity:0.5;filter:grayscale(0.7);'}">
         <div style="width:100%;aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;position:relative;">
           <img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.style.display='none';this.parentElement.style.color='#94a3b8';this.parentElement.style.fontSize='12px';this.parentElement.textContent='no photo';"/>
           ${photoCount > 1 ? `<span style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,0.6);color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;">📷 ${photoCount}</span>` : ''}
+          ${isLinked ? `<span style="position:absolute;bottom:6px;right:6px;background:rgba(22,163,74,0.9);color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:6px;">🔗 LINKED</span>` : ''}
           ${isActive ? '' : `<span style="position:absolute;top:6px;right:6px;background:#64748b;color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;">PAUSED</span>`}
         </div>
         <div style="padding:10px 12px;">
           <label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#475569;margin-bottom:6px;cursor:pointer;"><input type="checkbox" class="tmpl-sel" value="${t.id}" onclick="event.stopPropagation();" style="width:auto;"/> Select</label>
+          ${linkedBadge}
           <div style="font-weight:600;font-size:14px;color:#1a1d2e;">${esc(t.title || '(no title)')}</div>
           <div style="font-size:12px;color:#6b7280;margin:3px 0;line-height:1.5;">${esc(t.subtitle || '(no subtitle)')}</div>
           <div style="font-size:11px;color:#94a3b8;font-family:monospace;margin-top:4px;word-break:break-all;">🔘 ${esc(t.buttonText)} · 🔗 ${esc((t.redirect || '(no redirect)').replace(/^https?:\/\//, ''))}</div>
           <div style="display:flex;gap:6px;margin-top:10px;">
             <button onclick="editTmpl('${t.id}')" class="qbtn" style="background:#6366f1;flex:1;">✏️ Edit</button>
-            <button type="button" onclick="dupTmpl('${t.id}','${otherSet}')" class="qbtn" style="background:#0ea5e9;" title="Duplicate to ${otherSet}">⧉</button>
+            <button type="button" onclick="dupTmpl('${t.id}','${otherSet}')" class="qbtn" style="background:#0ea5e9;" title="Duplicate + link to ${otherSet}">⧉🔗</button>
+            ${!isLinked ? `<button type="button" onclick="manualLink('${t.id}','${otherSet}')" class="qbtn" style="background:#16a34a;" title="Link to existing ${otherSet} card">🔗</button>` : ''}
             <a href="/template-delete?id=${t.id}" onclick="return confirm('Delete this template?')" class="qbtn" style="background:#dc2626;">🗑️</a>
           </div>
         </div>
@@ -1158,36 +1239,32 @@ function renderTemplateManager(req) {
       <div style="margin-top:18px;">
         <h3 style="font-size:15px;color:#1a1d2e;margin:0 0 4px;border-left:4px solid ${color};padding-left:8px;">🌐 ${esc(setName)} templates <span style="font-weight:400;color:#94a3b8;">(${list.length})</span></h3>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-top:8px;">
-          ${cards || '<span style="color:#94a3b8;font-size:13px;padding:8px;">No templates for ' + esc(setName) + ' yet. Add one below.</span>'}
+          ${cards || '<span style="color:#94a3b8;font-size:13px;padding:8px;">No templates for ' + esc(setName) + ' yet.</span>'}
         </div>
       </div>`;
   }).join('');
 
   return `<div class="container">
     ${renderAlerts(req)}
-
     ${renderMasterRedirectCard()}
-
     <div class="card">
-      <h2>🎴 Card Templates <span style="font-size:13px;font-weight:400;color:#6b7280;">— complete cards (photo + title + subtitle + redirect), rotated daily</span></h2>
-      <p style="color:#6b7280;font-size:13px;">Build complete card templates here. Each one bundles a photo, title, subtitle, button, and redirect URL together — tagged for a website. Pages assigned to <strong>Scrollgallery</strong> rotate through Scrollgallery templates; pages on <strong>TheViralBox</strong> rotate through TheViralBox templates. When a page randomizes or sends its daily broadcast, it picks one complete template (different from its last).</p>
+      <h2>🎴 Card Templates</h2>
       <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 14px;font-size:13px;color:#1e40af;margin-top:10px;">
         <strong>Total: ${templates.length} templates</strong> · Scrollgallery: ${templates.filter(t => (t.set||DEFAULT_SET)===DEFAULT_SET).length} · TheViralBox: ${templates.filter(t => t.set===SECOND_SET).length}
       </div>
     </div>
-
     <div class="card" style="border:2px solid #c7d2fe;">
       <h2 id="form-title">➕ Add New Template</h2>
       <form action="/template-add" method="POST" id="tmpl-form" onsubmit="return validateTmplForm();">
         <input type="hidden" name="id" id="f-id" value=""/>
         <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px 12px;margin-bottom:14px;">
-          <label style="font-weight:600;color:#0369a1;">⚡ Quick paste from sheet <span style="font-weight:400;color:#0c7bb3;font-size:12px;">— paste one row: Name / Subtitle / Photo / Button / Scrollgallery URL / TheViralBox URL</span></label>
+          <label style="font-weight:600;color:#0369a1;">⚡ Quick paste from sheet</label>
           <textarea id="f-rawrow" placeholder="Paste a row copied from your spreadsheet here, then click Fill fields." style="width:100%;min-height:54px;font-size:12px;margin-top:6px;font-family:monospace;"></textarea>
           <button type="button" class="btn" style="background:#0ea5e9;color:#fff;margin-top:6px;" onclick="fillFromRow()">⤵️ Fill fields from row</button>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div>
-            <label>Card Title (the name)</label>
+            <label>Card Title</label>
             <input name="title" id="f-title" placeholder="e.g. Elizabeth 56 💕" style="width:100%;"/>
           </div>
           <div>
@@ -1196,12 +1273,12 @@ function renderTemplateManager(req) {
           </div>
         </div>
         <label style="margin-top:10px;display:block;">Card Subtitle</label>
-        <input name="subtitle" id="f-subtitle" placeholder="e.g. You just seem like someone interesting, and I'd love to say hello." style="width:100%;"/>
+        <input name="subtitle" id="f-subtitle" placeholder="e.g. You just seem like someone interesting..." style="width:100%;"/>
         <div style="margin-top:10px;">
           <label>Button Text</label>
           <input name="buttonText" id="f-button" placeholder="My Photos 📞" style="width:100%;"/>
         </div>
-        <label style="margin-top:10px;display:block;">Photos <span style="font-weight:400;color:#94a3b8;font-size:12px;">— add one or more; a random one is sent each time. Title, subtitle &amp; URL stay the same.</span></label>
+        <label style="margin-top:10px;display:block;">Photos</label>
         <input type="hidden" name="photos" id="f-photos" value="[]"/>
         <div style="display:flex;gap:8px;margin-top:4px;">
           <input type="text" id="f-photo-add" placeholder="https://i.imgur.com/xxxxx.png" style="flex:1;font-family:monospace;font-size:12px;"/>
@@ -1209,15 +1286,19 @@ function renderTemplateManager(req) {
         </div>
         <div id="f-dropzone" style="margin-top:8px;border:2px dashed #cbd5e1;border-radius:8px;padding:14px;text-align:center;color:#94a3b8;font-size:13px;cursor:pointer;">📂 Drag &amp; drop a photo here (or click) to upload to Imgur</div>
         <div id="f-photo-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin-top:10px;"></div>
-        <label style="margin-top:10px;display:block;">Redirect URL</label>
+        <label style="margin-top:10px;display:block;">Redirect URL <span id="f-redirect-label" style="font-weight:400;color:#94a3b8;font-size:11px;"></span></label>
         <input name="redirect" id="f-redirect" placeholder="https://scrollgallery.com/?p=50328" style="width:100%;font-family:monospace;font-size:12px;"/>
+        <div id="f-linked-block" style="display:none;margin-top:10px;background:#dcfce7;border:1px solid #86efac;border-radius:8px;padding:10px 12px;">
+          <div style="font-size:12px;font-weight:700;color:#166534;margin-bottom:6px;">🔗 Linked partner redirect URL <span style="font-weight:400;font-size:11px;color:#16a34a;">(title, subtitle, photos, button will sync — only this URL stays separate)</span></div>
+          <input name="linkedRedirect" id="f-linked-redirect" placeholder="https://photos.theviralbox.info/archives/..." style="width:100%;font-family:monospace;font-size:12px;background:#fff;border:1px solid #86efac;"/>
+          <input type="hidden" name="linkedId" id="f-linked-id" value=""/>
+        </div>
         <div style="margin-top:14px;display:flex;gap:8px;">
           <button type="submit" class="btn btn-green" id="f-submit">➕ Add Template</button>
           <button type="button" onclick="resetForm()" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="f-cancel">Cancel Edit</button>
         </div>
       </form>
     </div>
-
     <div class="card">
       <h2>📋 Existing Templates</h2>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#f7f8fc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:6px;">
@@ -1231,7 +1312,6 @@ function renderTemplateManager(req) {
       </div>
       ${sections}
     </div>
-
     <script>
       var formPhotos = [];
       function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
@@ -1246,15 +1326,8 @@ function renderTemplateManager(req) {
           fetch('/upload-image', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: reader.result }) })
             .then(function(r){ return r.json(); })
             .then(function(d){
-              if (d && d.url) {
-                formPhotos.push(d.url);
-                renderPhotoGrid();
-                dz.textContent = '✅ Added! Drop another, or click.';
-                setTimeout(function(){ dz.textContent = orig; }, 1800);
-              } else {
-                dz.textContent = orig;
-                alert('Upload failed: ' + ((d && d.error) || 'unknown error'));
-              }
+              if (d && d.url) { formPhotos.push(d.url); renderPhotoGrid(); dz.textContent = '✅ Added! Drop another, or click.'; setTimeout(function(){ dz.textContent = orig; }, 1800); }
+              else { dz.textContent = orig; alert('Upload failed: ' + ((d && d.error) || 'unknown error')); }
             })
             .catch(function(e){ dz.textContent = orig; alert('Upload error: ' + e.message); });
         };
@@ -1276,77 +1349,62 @@ function renderTemplateManager(req) {
         document.getElementById('f-photos').value = JSON.stringify(formPhotos);
         var grid = document.getElementById('f-photo-grid');
         grid.innerHTML = formPhotos.map(function(u, i){
-          return '<div style="position:relative;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">'
-            + '<div style="aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;">'
-            + '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;" onerror=\"imgFail(this)\"/>'
-            + '</div>'
+          var shortUrl = u.replace(/^https?:\/\//, '');
+          var uid = 'pgurl_' + i;
+          return '<div style="border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;background:#fff;">'
+            + '<div style="position:relative;aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;">'
+            + '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;" onerror="imgFail(this)"/>'
             + '<button type="button" aria-label="Remove" onclick="removePhotoFromForm('+i+')" style="position:absolute;top:3px;right:3px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;line-height:1;cursor:pointer;">\u00d7</button>'
+            + '</div>'
+            + '<div style="padding:6px;background:#f8fafc;border-top:1px solid #e2e8f0;">'
+            + '<div style="font-size:10px;color:#6b7280;margin-bottom:4px;font-weight:600;">📎 Photo ' + (i+1) + ' URL</div>'
+            + '<input id="'+uid+'" type="text" value="'+escAttr(u)+'" readonly onclick="this.select();" style="width:100%;font-size:10px;font-family:monospace;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#1e40af;cursor:pointer;word-break:break-all;" title="Click to select full URL"/>'
+            + '<button type="button" onclick="(function(b){var el=document.getElementById(\''+uid+'\');el.select();document.execCommand(\'copy\');var t=b.textContent;b.textContent=\'✓ Copied!\';b.style.background=\'#16a34a\';setTimeout(function(){b.textContent=\'📋 Copy URL\';b.style.background=\'#6b7280\';},1400);})(this)" style="width:100%;margin-top:4px;background:#6b7280;color:#fff;border:none;border-radius:4px;font-size:10px;font-weight:600;padding:4px;cursor:pointer;">📋 Copy URL</button>'
+            + '</div>'
             + '</div>';
         }).join('') || '<span style="color:#94a3b8;font-size:12px;">No photos added yet.</span>';
       }
-      function addPhotoToForm() {
-        var inp = document.getElementById('f-photo-add');
-        var v = (inp.value || '').trim();
-        if (!v) return;
-        formPhotos.push(v);
-        inp.value = '';
-        renderPhotoGrid();
-      }
-      function removePhotoFromForm(i) {
-        formPhotos.splice(i, 1);
-        renderPhotoGrid();
-      }
-      function validateTmplForm() {
-        if (!formPhotos.length) { alert('Add at least one photo.'); return false; }
-        return true;
-      }
+      function addPhotoToForm() { var inp = document.getElementById('f-photo-add'); var v = (inp.value || '').trim(); if (!v) return; formPhotos.push(v); inp.value = ''; renderPhotoGrid(); }
+      function removePhotoFromForm(i) { formPhotos.splice(i, 1); renderPhotoGrid(); }
+      function validateTmplForm() { if (!formPhotos.length) { alert('Add at least one photo.'); return false; } return true; }
       function dupTmpl(id, toSet) {
-        var t = window['__t_' + id];
-        if (!t) return;
-        var url = prompt('Enter the ' + toSet + ' gallery URL for this duplicate:', '');
-        if (url === null) return;
-        url = (url || '').trim();
-        if (!url) { alert('A URL is required to duplicate.'); return; }
+        var t = window['__t_' + id]; if (!t) return;
+        var url = prompt('Enter the ' + toSet + ' gallery URL for the duplicate:\n\n(The two cards will be LINKED — editing one syncs photos/title/subtitle/button to the other)', '');
+        if (url === null) return; url = (url || '').trim();
+        if (!url) { alert('A URL is required.'); return; }
         window.location.href = '/template-duplicate?id=' + encodeURIComponent(id) + '&to=' + encodeURIComponent(toSet) + '&url=' + encodeURIComponent(url);
       }
-      function updateSelCount() {
-        var n = document.querySelectorAll('.tmpl-sel:checked').length;
-        var el = document.getElementById('sel-count');
-        if (el) el.textContent = n ? (n + ' selected') : '';
+      function manualLink(id, otherSet) {
+        var t = window['__t_' + id]; if (!t) return;
+        var pid = prompt('Enter the ID of the ' + otherSet + ' card to link to.\n\n(You can find the ID by hovering/inspecting a card, or ask: it starts with "t" e.g. t1234567890)\n\nOnce linked, editing either card will sync photos, title, subtitle and button to the other — each keeps its own redirect URL.', '');
+        if (pid === null) return; pid = (pid || '').trim();
+        if (!pid) { alert('An ID is required.'); return; }
+        if (!confirm('Link "' + (t.title || id) + '" (' + (t.set || 'Scrollgallery') + ') to card ID "' + pid + '" (' + otherSet + ')?\n\nEdits to either card will sync shared fields to the other.')) return;
+        fetch('/template-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, partnerId: pid }) })
+          .then(function(r){ return r.json(); })
+          .then(function(d){ if (d && d.ok) { location.href = '/?page=templates&lib_msg=' + encodeURIComponent('Cards linked! Edits will now sync between them.'); } else { alert('Link failed: ' + ((d && d.error) || 'unknown error')); } })
+          .catch(function(e){ alert('Error: ' + e.message); });
       }
-      function selectAllTmpls(on) {
-        var b = document.querySelectorAll('.tmpl-sel');
-        for (var i = 0; i < b.length; i++) b[i].checked = on;
-        updateSelCount();
-      }
+      function updateSelCount() { var n = document.querySelectorAll('.tmpl-sel:checked').length; var el = document.getElementById('sel-count'); if (el) el.textContent = n ? (n + ' selected') : ''; }
+      function selectAllTmpls(on) { var b = document.querySelectorAll('.tmpl-sel'); for (var i = 0; i < b.length; i++) b[i].checked = on; updateSelCount(); }
       function bulkSetActive(makeActive) {
-        var sel = document.querySelectorAll('.tmpl-sel:checked');
-        var ids = []; for (var i = 0; i < sel.length; i++) ids.push(sel[i].value);
+        var sel = document.querySelectorAll('.tmpl-sel:checked'); var ids = []; for (var i = 0; i < sel.length; i++) ids.push(sel[i].value);
         if (!ids.length) { alert('Tick the cards you want first.'); return; }
         fetch('/templates-bulk-active', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ids, active: makeActive }) })
-          .then(function(r){ return r.json(); })
-          .then(function(){ location.href = '/?page=templates'; })
-          .catch(function(e){ alert('Error: ' + e.message); });
+          .then(function(r){ return r.json(); }).then(function(){ location.href = '/?page=templates'; }).catch(function(e){ alert('Error: ' + e.message); });
       }
       function fillFromRow() {
         var raw = document.getElementById('f-rawrow').value || '';
-        if (!raw.trim()) { alert('Paste a row from your sheet first.'); return; }
+        if (!raw.trim()) { alert('Paste a row first.'); return; }
         var TAB = String.fromCharCode(9), NL = String.fromCharCode(10);
-        var line = raw.split(NL)[0];
-        var c = line.split(TAB);
+        var line = raw.split(NL)[0]; var c = line.split(TAB);
         function cell(i){ return (c[i] || '').trim(); }
         if (cell(0)) document.getElementById('f-title').value = cell(0);
         if (cell(1)) document.getElementById('f-subtitle').value = cell(1);
         if (cell(3)) document.getElementById('f-button').value = cell(3);
         if (cell(2) && cell(2).indexOf('http') === 0) { formPhotos.push(cell(2)); renderPhotoGrid(); }
         var scrollUrl = '', viralUrl = '';
-        for (var i = 0; i < c.length; i++) {
-          var v = (c[i] || '').trim();
-          if (v.indexOf('http') === 0) {
-            if (v.indexOf('theviralbox') !== -1) viralUrl = v;
-            else if (v.indexOf('scrollgallery') !== -1) scrollUrl = v;
-          }
-        }
+        for (var i = 0; i < c.length; i++) { var v = (c[i] || '').trim(); if (v.indexOf('http') === 0) { if (v.indexOf('theviralbox') !== -1) viralUrl = v; else if (v.indexOf('scrollgallery') !== -1) scrollUrl = v; } }
         var setSel = document.getElementById('f-set');
         var redirect = (setSel.value === 'TheViralBox' && viralUrl) ? viralUrl : (scrollUrl || viralUrl);
         if (redirect) document.getElementById('f-redirect').value = redirect;
@@ -1354,8 +1412,7 @@ function renderTemplateManager(req) {
         else if (redirect && redirect.indexOf('scrollgallery') !== -1) setSel.value = 'Scrollgallery';
       }
       function editTmpl(id) {
-        var t = window['__t_' + id];
-        if (!t) return;
+        var t = window['__t_' + id]; if (!t) return;
         document.getElementById('f-id').value = t.id;
         document.getElementById('f-title').value = t.title || '';
         document.getElementById('f-subtitle').value = t.subtitle || '';
@@ -1368,6 +1425,25 @@ function renderTemplateManager(req) {
         document.getElementById('form-title').textContent = '✏️ Edit Template';
         document.getElementById('f-submit').textContent = '💾 Save Changes';
         document.getElementById('f-cancel').style.display = 'inline-block';
+        // Show linked partner block if this card is linked
+        var lb = document.getElementById('f-linked-block');
+        var lbl = document.getElementById('f-redirect-label');
+        var lrid = document.getElementById('f-linked-id');
+        var lrurl = document.getElementById('f-linked-redirect');
+        if (t.linkedId) {
+          var partner = window['__t_' + t.linkedId];
+          lb.style.display = 'block';
+          lbl.textContent = '(this card\'s own URL — stays separate from partner)';
+          lrid.value = t.linkedId;
+          lrurl.value = partner ? (partner.redirect || '') : '';
+          lrurl.placeholder = partner ? 'Partner: ' + (partner.set || 'other set') + ' redirect URL' : 'Partner redirect URL';
+          document.getElementById('f-submit').textContent = '💾 Save + Sync to Linked Card';
+        } else {
+          lb.style.display = 'none';
+          lbl.textContent = '';
+          lrid.value = '';
+          lrurl.value = '';
+        }
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
       function resetForm() {
@@ -1377,8 +1453,10 @@ function renderTemplateManager(req) {
         document.getElementById('form-title').textContent = '➕ Add New Template';
         document.getElementById('f-submit').textContent = '➕ Add Template';
         document.getElementById('f-cancel').style.display = 'none';
-        formPhotos = [];
-        renderPhotoGrid();
+        document.getElementById('f-linked-block').style.display = 'none';
+        document.getElementById('f-linked-id').value = '';
+        document.getElementById('f-redirect-label').textContent = '';
+        formPhotos = []; renderPhotoGrid();
       }
       (function(){
         var nid = new URLSearchParams(location.search).get('new');
@@ -1386,12 +1464,10 @@ function renderTemplateManager(req) {
         var el = document.getElementById('tmpl-' + nid);
         if (!el) return;
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.style.transition = 'box-shadow 0.3s';
-        el.style.boxShadow = '0 0 0 3px #6366f1';
+        el.style.transition = 'box-shadow 0.3s'; el.style.boxShadow = '0 0 0 3px #6366f1';
         setTimeout(function(){ el.style.boxShadow = 'none'; }, 2600);
       })();
-      renderPhotoGrid();
-      setupDropzone();
+      renderPhotoGrid(); setupDropzone();
       document.addEventListener('change', function(e){ if (e.target && e.target.classList && e.target.classList.contains('tmpl-sel')) updateSelCount(); });
     </script>
   </div>`;
@@ -1424,34 +1500,28 @@ function renderAllPagesView(pages, req) {
     const sendNowBadge = sendNowOn
       ? `<span class="badge badge-green" style="font-size:9px;">SendNow ON</span>`
       : `<span class="badge badge-gray" style="font-size:9px;">SendNow OFF</span>`;
+    const groupBadge = p.group
+      ? `<span class="group-badge">${esc(p.group)}</span>`
+      : `<span class="group-badge unassigned">—</span>`;
     const pauseBtn = p.broadcastEnabled
-      ? `<form action="/toggle-page" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-pause" title="Stops daily auto-broadcast">⏸️ Pause Daily</button></form>`
-      : `<form action="/toggle-page" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-resume" title="Re-enables daily auto-broadcast">▶️ Resume Daily</button></form>`;
+      ? `<form action="/toggle-page" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-pause">⏸️ Pause</button></form>`
+      : `<form action="/toggle-page" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-resume">▶️ Resume</button></form>`;
     const sendNowToggle = sendNowOn
-      ? `<form action="/toggle-sendnow" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn" style="background:#f59e0b;" title="Exclude this page from bulk Send Now to All">🚫 Pause SendNow</button></form>`
-      : `<form action="/toggle-sendnow" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-resume" title="Include this page in bulk Send Now to All">✅ Resume SendNow</button></form>`;
+      ? `<form action="/toggle-sendnow" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn" style="background:#f59e0b;">🚫 Pause SN</button></form>`
+      : `<form action="/toggle-sendnow" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-resume">✅ Resume SN</button></form>`;
     return `<tr>
-      <td><strong>${esc(p.label)}</strong><br/><span style="font-size:11px;color:#6b7280;">${esc(p.pageId)}</span></td>
+      <td><strong>${esc(p.label)}</strong><br/><span style="font-size:11px;color:#6b7280;">${esc(p.pageId)}</span><br/>${groupBadge}</td>
       <td>${fans.length}</td>
       <td>${clicksToday} / ${clicks}</td>
       <td style="white-space:nowrap;font-size:13px;">${sent} ✅ · ${failed} ❌</td>
       <td>${status}<br/>${sendNowBadge}</td>
-      <td style="font-size:11px;">${(function(){
-        var eff = (p.contentMode === 'classic' || p.contentMode === 'templates') ? p.contentMode : globalMode;
-        var isOverride = (p.contentMode === 'classic' || p.contentMode === 'templates');
-        var badge = eff === 'templates'
-          ? '<span style="color:#7c3aed;font-weight:600;">🎴 Templates</span>'
-          : '<span style="color:#0c447c;font-weight:600;">📷 Classic</span>';
-        var sub = isOverride ? '<span style="color:#94a3b8;font-size:10px;">(page set)</span>' : '<span style="color:#94a3b8;font-size:10px;">(global)</span>';
-        return badge + '<br/>' + sub;
-      })()}</td>
       <td><span class="bp-cell" data-bp="${esc(p.pageId)}" style="font-size:12px;color:#94a3b8;">—</span></td>
       <td>
         <div class="actions">
           ${pauseBtn}
           ${sendNowToggle}
-          <a href="/send-now?page=${esc(p.pageId)}" class="qbtn qbtn-send" onclick="return confirm('Send broadcast to ${fans.length} fans on ${esc(p.label)} now?')" title="Trigger broadcast to all fans on this page now">🚀 Send Now</a>
-          <a href="/?page=${esc(p.pageId)}" class="qbtn qbtn-open" title="Full settings + danger zone">⚙️ Open</a>
+          <a href="/send-now?page=${esc(p.pageId)}" class="qbtn qbtn-send" onclick="return confirm('Send to ${fans.length} fans on ${esc(p.label)} now?')">🚀 Send</a>
+          <a href="/?page=${esc(p.pageId)}" class="qbtn qbtn-open">⚙️ Open</a>
         </div>
       </td>
     </tr>`;
@@ -1459,7 +1529,6 @@ function renderAllPagesView(pages, req) {
 
   return `<div class="container">
     ${renderAlerts(req)}
-
     ${renderMasterRedirectBanner()}
 
     <div class="card">
@@ -1476,183 +1545,130 @@ function renderAllPagesView(pages, req) {
       </div>
     </div>
 
+    ${renderGroupManager(pages)}
+
     <div class="card">
       <h2>📋 Pages</h2>
       ${pages.length === 0
-        ? '<p style="color:#6b7280;">No pages yet. Add one below to get started 👇</p>'
+        ? '<p style="color:#6b7280;">No pages yet. Add one below.</p>'
         : `
-          <div style="margin-bottom:12px;padding:12px;background:#f0fdf4;border:2px solid #86efac;border-radius:8px;">
-            <div style="font-size:13px;font-weight:700;color:#166534;margin-bottom:8px;">📣 Send Now to All Pages <span style="font-weight:400;color:#16a34a;">— fires on pages with Send Now ON (${pages.filter(p => p.sendNowEnabled !== false).length} of ${pages.length} eligible)</span></div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-              <form action="/send-now-all" method="POST" style="display:inline;margin:0;">
-                <button type="submit" class="qbtn" style="background:#16a34a;" onclick="return confirm('SEND NOW to all eligible pages (${pages.filter(p => p.sendNowEnabled !== false).length} pages)?\\n\\nThis broadcasts the CURRENT active card on each page to ALL its fans.\\n\\nPages with Send Now PAUSED are skipped.\\n\\n⚠️ This cannot be stopped once started.')">📣 Send Now to All</button>
-              </form>
-              <form action="/send-now-all?randomize=1" method="POST" style="display:inline;margin:0;">
-                <button type="submit" class="qbtn" style="background:#7c3aed;" onclick="return confirm('RANDOMIZE + SEND to all eligible pages (${pages.filter(p => p.sendNowEnabled !== false).length} pages)?\\n\\nEach page first gets a fresh random photo + a URL from ITS OWN set (Scrollgallery or TheViralBox), then broadcasts to all its fans.\\n\\nPages with Send Now PAUSED are skipped.\\n\\n⚠️ This cannot be stopped once started.')">🎲📣 Randomize + Send All</button>
-              </form>
-              <span style="color:#cbd5e1;">|</span>
-              <form action="/pause-sendnow-all" method="POST" style="display:inline;margin:0;">
-                <button type="submit" class="qbtn" style="background:#f59e0b;" onclick="return confirm('Pause Send Now on ALL pages? They will be EXCLUDED from bulk Send Now until resumed.\\n\\n(This does NOT affect the daily 7am auto-broadcast.)')">🚫 Pause Send Now (All)</button>
-              </form>
-              <form action="/resume-sendnow-all" method="POST" style="display:inline;margin:0;">
-                <button type="submit" class="qbtn" style="background:#16a34a;" onclick="return confirm('Resume Send Now on ALL pages?')">✅ Resume Send Now (All)</button>
-              </form>
-            </div>
-          </div>
+          ${renderGroupSendNow(pages)}
+
           <div style="margin-bottom:12px;padding:10px;background:#f7f8fc;border-radius:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <span style="font-size:13px;font-weight:600;color:#4a5568;">Other bulk actions:</span>
             <form action="/pause-all" method="POST" style="display:inline;margin:0;">
-              <button type="submit" class="qbtn qbtn-pause" onclick="return confirm('Pause daily auto-broadcast for ALL ${pages.length} pages?')">⏸️ Pause All Pages</button>
+              <button type="submit" class="qbtn qbtn-pause" onclick="return confirm('Pause daily auto-broadcast for ALL pages?')">⏸️ Pause All</button>
             </form>
             <form action="/resume-all" method="POST" style="display:inline;margin:0;">
-              <button type="submit" class="qbtn qbtn-resume" onclick="return confirm('Resume daily auto-broadcast for ALL ${pages.length} pages?')">▶️ Resume All Pages</button>
+              <button type="submit" class="qbtn qbtn-resume" onclick="return confirm('Resume daily auto-broadcast for ALL pages?')">▶️ Resume All</button>
             </form>
             <form action="/disable-cleanup-all" method="POST" style="display:inline;margin:0;">
-              <button type="submit" class="qbtn" style="background:#3a8dde;" onclick="return confirm('Set auto-cleanup threshold to 0 (NEVER remove fans) for ALL ${pages.length} pages?\\n\\nFans whose 24h window expired will stay in the list but their sends will keep failing.')">🛡️ Disable Cleanup (All)</button>
+              <button type="submit" class="qbtn" style="background:#3a8dde;" onclick="return confirm('Disable auto-cleanup on ALL pages?')">🛡️ Disable Cleanup (All)</button>
             </form>
             <form action="/enable-cleanup-all" method="POST" style="display:inline;margin:0;">
-              <button type="submit" class="qbtn" style="background:#28a745;" onclick="return confirm('Set auto-cleanup threshold to 1 (remove fans on 1st failure) for ALL ${pages.length} pages?\\n\\nThis is the default, aggressive cleanup mode.')">🧹 Enable Cleanup (All)</button>
+              <button type="submit" class="qbtn" style="background:#28a745;" onclick="return confirm('Enable auto-cleanup (threshold=1) on ALL pages?')">🧹 Enable Cleanup (All)</button>
             </form>
             <form action="/randomize-all" method="POST" style="display:inline;margin:0;">
-              <button type="submit" class="qbtn" style="background:#8b5cf6;" onclick="return confirm('Randomize photo + redirect URL for ALL ${pages.length} pages?\\n\\nEach page gets a fresh random combo from the shared library, different from its previous pick.')">🎲 Randomize ALL Pages</button>
+              <button type="submit" class="qbtn" style="background:#8b5cf6;" onclick="return confirm('Randomize ALL pages?')">🎲 Randomize ALL</button>
             </form>
             <form action="/reset-stats-all" method="POST" style="display:inline;margin:0;">
-              <button type="submit" class="qbtn" style="background:#dc2626;" onclick="return confirm('Reset ALL stats to 0 on all ${pages.length} pages?\\n\\nThis clears clicks, messages sent/failed, and daily history.\\n\\n✅ Fan counts are KEPT.\\n❌ Stats history is permanently erased.')">🗑️ Reset All Stats (keep fans)</button>
+              <button type="submit" class="qbtn" style="background:#dc2626;" onclick="return confirm('Reset ALL stats on all pages? Fan counts are kept.')">🗑️ Reset All Stats</button>
             </form>
-            <a href="/backup" class="qbtn" style="background:#0f766e;text-decoration:none;display:inline-flex;align-items:center;" title="Download a full backup of all data (pages, templates, fans, stats, settings)">⬇️ Download Backup</a>
-            <button type="button" class="qbtn" style="background:#7c3aed;" onclick="document.getElementById('restore-file').click()" title="Restore all data from a backup file you downloaded">♻️ Restore Backup</button>
+            <a href="/backup" class="qbtn" style="background:#0f766e;text-decoration:none;">⬇️ Backup</a>
+            <button type="button" class="qbtn" style="background:#7c3aed;" onclick="document.getElementById('restore-file').click()">♻️ Restore</button>
             <input type="file" id="restore-file" accept="application/json,.json" style="display:none;" onchange="restoreBackup(this)"/>
-            <span style="font-size:11px;color:#6b7280;margin-left:8px;display:block;width:100%;">— useful before deploying code changes · download a backup anytime</span>
           </div>
+
           <div style="margin-bottom:12px;padding:12px;background:#faf5ff;border:2px solid #e9d5ff;border-radius:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
             <span style="font-size:13px;font-weight:700;color:#6b21a8;">🎚️ Global Content Mode:</span>
             <form action="/set-global-mode" method="POST" style="margin:0;display:inline;">
               <input type="hidden" name="mode" value="classic"/>
-              <button type="submit" class="qbtn" style="background:${globalMode === 'classic' ? '#16a34a' : '#cbd5e1'};color:${globalMode === 'classic' ? '#fff' : '#475569'};">${globalMode === 'classic' ? '✓ ' : ''}📷 Classic (photo + URL)</button>
+              <button type="submit" class="qbtn" style="background:${globalMode === 'classic' ? '#16a34a' : '#cbd5e1'};color:${globalMode === 'classic' ? '#fff' : '#475569'};">${globalMode === 'classic' ? '✓ ' : ''}📷 Classic</button>
             </form>
             <form action="/set-global-mode" method="POST" style="margin:0;display:inline;">
               <input type="hidden" name="mode" value="templates"/>
-              <button type="submit" class="qbtn" style="background:${globalMode === 'templates' ? '#16a34a' : '#cbd5e1'};color:${globalMode === 'templates' ? '#fff' : '#475569'};">${globalMode === 'templates' ? '✓ ' : ''}🎴 Templates (complete cards)</button>
+              <button type="submit" class="qbtn" style="background:${globalMode === 'templates' ? '#16a34a' : '#cbd5e1'};color:${globalMode === 'templates' ? '#fff' : '#475569'};">${globalMode === 'templates' ? '✓ ' : ''}🎴 Templates</button>
             </form>
-            <span style="font-size:11px;color:#7c3aed;margin-left:4px;">Default for pages set to "Global". Each page can override below.</span>
           </div>
+
           <table>
-            <thead><tr><th>Page</th><th>Fans</th><th>Clicks (today / total)</th><th>Messages</th><th>Status</th><th>Mode</th><th>Send Progress</th><th>Quick actions</th></tr></thead>
+            <thead><tr><th>Page / Group</th><th>Fans</th><th>Clicks (today/total)</th><th>Messages</th><th>Status</th><th>Send Progress</th><th>Actions</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
-            <div class="card" style="margin-top:0;">
-              <h2>🔑 Page Keys &amp; 📥 Contacts <span style="font-size:12px;font-weight:400;color:#6b7280;">— edit token/name/ID and import contacts, per page or in bulk</span></h2>
-              <input type="text" id="creds-filter" placeholder="🔎 Filter pages by name…" oninput="filterCreds(this.value)" style="width:100%;margin-bottom:10px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/>
-              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
-                <button type="button" class="qbtn" style="background:#2563eb;" onclick="importSelected()">📥 Import selected</button>
-                <button type="button" class="qbtn" style="background:#1d4ed8;" onclick="importAllPagesContacts()">📥 Import ALL pages</button>
-                <span style="width:1px;height:18px;background:#cbd5e1;display:inline-block;"></span>
-                <button type="button" class="qbtn" style="background:#e2e8f0;color:#475569;" onclick="selectAllImp(true)">Select all</button>
-                <button type="button" class="qbtn" style="background:#e2e8f0;color:#475569;" onclick="selectAllImp(false)">Clear</button>
-                <span id="imp-progress" style="font-size:12px;color:#6b7280;font-weight:600;"></span>
-              </div>
-              <div style="max-height:420px;overflow:auto;border:1px solid #f1f5f9;border-radius:8px;">
-                ${pages.map(p => `
-                <div class="cred-row" data-pageid="${esc(p.pageId)}" data-label="${esc((p.label||'').toLowerCase())}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid #f1f5f9;">
-                  <input type="checkbox" class="imp-sel" value="${esc(p.pageId)}" title="Select for bulk import" style="width:auto;"/>
-                  <input type="text" value="${esc(p.label||'')}" data-f="label" title="Page name" style="flex:1;min-width:140px;font-size:13px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
-                  <input type="text" value="${esc(p.pageId)}" data-f="pageId" title="Page ID (change with caution)" style="width:150px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
-                  <input type="text" placeholder="paste new token · blank = keep" data-f="token" title="API key / access token" style="flex:2;min-width:160px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
-                  <span class="tok-hint" title="current token" style="font-size:10px;font-family:monospace;min-width:86px;color:${p.accessToken ? '#16a34a' : '#dc2626'};">${p.accessToken ? '🔑 ' + esc(p.accessToken.slice(0,6)) + '…' + esc(p.accessToken.slice(-4)) : '⚠️ none'}</span>
-                  <button type="button" class="qbtn" style="background:#16a34a;" onclick="savePageCreds(this)">💾 Save</button>
-                  <button type="button" class="qbtn" style="background:#2563eb;" onclick="importOne(this)">📥 Import</button>
-                  <span class="cred-status" style="font-size:12px;font-weight:600;min-width:70px;"></span>
-                </div>`).join('')}
-              </div>
-              <div class="helper" style="margin-top:8px;font-size:12px;color:#94a3b8;">Saving a token re-activates that page immediately. Changing a Page ID also moves that page\u2019s fans &amp; stats to the new ID — only do it if the new ID is correct.</div>
+
+          <div class="card" style="margin-top:0;">
+            <h2>🔑 Page Keys &amp; 📥 Contacts</h2>
+            <input type="text" id="creds-filter" placeholder="🔎 Filter pages by name…" oninput="filterCreds(this.value)" style="width:100%;margin-bottom:10px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+              <button type="button" class="qbtn" style="background:#2563eb;" onclick="importSelected()">📥 Import selected</button>
+              <button type="button" class="qbtn" style="background:#1d4ed8;" onclick="importAllPagesContacts()">📥 Import ALL pages</button>
+              <span style="width:1px;height:18px;background:#cbd5e1;display:inline-block;"></span>
+              <button type="button" class="qbtn" style="background:#e2e8f0;color:#475569;" onclick="selectAllImp(true)">Select all</button>
+              <button type="button" class="qbtn" style="background:#e2e8f0;color:#475569;" onclick="selectAllImp(false)">Clear</button>
+              <span id="imp-progress" style="font-size:12px;color:#6b7280;font-weight:600;"></span>
             </div>
-            <script>
-              function filterCreds(q){ q=(q||'').toLowerCase(); var rows=document.querySelectorAll('.cred-row'); for(var i=0;i<rows.length;i++){ var m=rows[i].getAttribute('data-label').indexOf(q)!==-1; rows[i].style.display=m?'':'none'; } }
-              function savePageCreds(btn){
-                var row=btn.closest('.cred-row');
-                var pageId=row.getAttribute('data-pageid');
-                var label=row.querySelector('[data-f="label"]').value;
-                var newPageId=row.querySelector('[data-f="pageId"]').value;
-                var token=row.querySelector('[data-f="token"]').value;
-                var status=row.querySelector('.cred-status');
-                status.style.color='#6b7280'; status.textContent='saving…';
-                fetch('/page-update-inline',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pageId:pageId,label:label,newPageId:newPageId,token:token})})
+            <div style="max-height:420px;overflow:auto;border:1px solid #f1f5f9;border-radius:8px;">
+              ${pages.map(p => `
+              <div class="cred-row" data-pageid="${esc(p.pageId)}" data-label="${esc((p.label||'').toLowerCase())}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid #f1f5f9;">
+                <input type="checkbox" class="imp-sel" value="${esc(p.pageId)}" title="Select for bulk import" style="width:auto;"/>
+                <input type="text" value="${esc(p.label||'')}" data-f="label" title="Page name" style="flex:1;min-width:140px;font-size:13px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
+                <input type="text" value="${esc(p.pageId)}" data-f="pageId" title="Page ID" style="width:150px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
+                <input type="text" placeholder="paste new token · blank = keep" data-f="token" title="Access token" style="flex:2;min-width:160px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
+                <span class="tok-hint" style="font-size:10px;font-family:monospace;min-width:86px;color:${p.accessToken ? '#16a34a' : '#dc2626'};">${p.accessToken ? '🔑 ' + esc(p.accessToken.slice(0,6)) + '…' + esc(p.accessToken.slice(-4)) : '⚠️ none'}</span>
+                <button type="button" class="qbtn" style="background:#16a34a;" onclick="savePageCreds(this)">💾 Save</button>
+                <button type="button" class="qbtn" style="background:#2563eb;" onclick="importOne(this)">📥 Import</button>
+                <span class="cred-status" style="font-size:12px;font-weight:600;min-width:70px;"></span>
+              </div>`).join('')}
+            </div>
+          </div>
+          <script>
+            function filterCreds(q){ q=(q||'').toLowerCase(); var rows=document.querySelectorAll('.cred-row'); for(var i=0;i<rows.length;i++){ var m=rows[i].getAttribute('data-label').indexOf(q)!==-1; rows[i].style.display=m?'':'none'; } }
+            function savePageCreds(btn){
+              var row=btn.closest('.cred-row'); var pageId=row.getAttribute('data-pageid');
+              var label=row.querySelector('[data-f="label"]').value; var newPageId=row.querySelector('[data-f="pageId"]').value; var token=row.querySelector('[data-f="token"]').value;
+              var status=row.querySelector('.cred-status'); status.style.color='#6b7280'; status.textContent='saving…';
+              fetch('/page-update-inline',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pageId:pageId,label:label,newPageId:newPageId,token:token})})
+                .then(function(r){return r.json();})
+                .then(function(d){
+                  if(d&&d.ok){ status.style.color='#16a34a'; status.textContent='✓ saved'; row.querySelector('[data-f="token"]').value=''; if(d.pageId){ row.setAttribute('data-pageid',d.pageId); } setTimeout(function(){status.textContent='';},2500); }
+                  else { status.style.color='#dc2626'; status.textContent=(d&&d.error)||'failed'; }
+                }).catch(function(e){ status.style.color='#dc2626'; status.textContent='error'; });
+            }
+            function selectAllImp(on){ var b=document.querySelectorAll('.imp-sel'); for(var i=0;i<b.length;i++){ if(b[i].closest('.cred-row').style.display!=='none') b[i].checked=on; } }
+            function doImport(pageId,status){
+              status.style.color='#6b7280'; status.textContent='importing…';
+              return fetch('/import-contacts-json?page='+encodeURIComponent(pageId),{method:'POST'})
+                .then(function(r){return r.json();})
+                .then(function(d){ if(d&&d.ok){ status.style.color='#16a34a'; status.textContent='✓ +'+d.found+' ('+d.total+')'; } else { status.style.color='#dc2626'; status.textContent='✗ '+((d&&d.error)||'failed').slice(0,26); } })
+                .catch(function(e){ status.style.color='#dc2626'; status.textContent='✗ error'; });
+            }
+            function importOne(btn){ var row=btn.closest('.cred-row'); return doImport(row.getAttribute('data-pageid'), row.querySelector('.cred-status')); }
+            function importList(ids){
+              var prog=document.getElementById('imp-progress'); var i=0, done=0;
+              function next(){ if(i>=ids.length){ prog.textContent='Done — imported '+done+' of '+ids.length+' pages'; return; } var pageId=ids[i]; i++; prog.textContent='Importing '+i+' of '+ids.length+'…'; var row=document.querySelector('.cred-row[data-pageid="'+pageId+'"]'); var status=row?row.querySelector('.cred-status'):{style:{}}; doImport(pageId,status).then(function(){ done++; next(); }); }
+              next();
+            }
+            function importSelected(){ var sel=document.querySelectorAll('.imp-sel:checked'); var ids=[]; for(var i=0;i<sel.length;i++) ids.push(sel[i].value); if(!ids.length){ alert('Tick the pages you want first.'); return; } if(!confirm('Import contacts for '+ids.length+' selected page(s)?')) return; importList(ids); }
+            function importAllPagesContacts(){ var b=document.querySelectorAll('.imp-sel'); var ids=[]; for(var i=0;i<b.length;i++) ids.push(b[i].value); if(!ids.length) return; if(!confirm('Import contacts for ALL '+ids.length+' pages?')) return; importList(ids); }
+            function restoreBackup(input){
+              var file = input.files && input.files[0]; if(!file){ return; }
+              if(!confirm('Restore from "'+file.name+'"? This OVERWRITES all current data. A safety copy is saved first.')){ input.value=''; return; }
+              var reader = new FileReader(); reader.onload = function(){
+                var prog = document.getElementById('imp-progress'); if(prog){ prog.style.color='#6b7280'; prog.textContent='Restoring backup…'; }
+                fetch('/restore-backup',{method:'POST',headers:{'Content-Type':'application/json'},body:reader.result})
                   .then(function(r){return r.json();})
-                  .then(function(d){
-                    if(d&&d.ok){
-                      status.style.color='#16a34a'; status.textContent='✓ saved';
-                      row.querySelector('[data-f="token"]').value='';
-                      if(d.pageId){ row.setAttribute('data-pageid',d.pageId); }
-                      setTimeout(function(){status.textContent='';},2500);
-                    } else { status.style.color='#dc2626'; status.textContent=(d&&d.error)||'failed'; }
-                  })
-                  .catch(function(e){ status.style.color='#dc2626'; status.textContent='error'; });
-              }
-              function selectAllImp(on){ var b=document.querySelectorAll('.imp-sel'); for(var i=0;i<b.length;i++){ if(b[i].closest('.cred-row').style.display!=='none') b[i].checked=on; } }
-              function doImport(pageId,status){
-                status.style.color='#6b7280'; status.textContent='importing…';
-                return fetch('/import-contacts-json?page='+encodeURIComponent(pageId),{method:'POST'})
-                  .then(function(r){return r.json();})
-                  .then(function(d){
-                    if(d&&d.ok){ status.style.color='#16a34a'; status.textContent='✓ +'+d.found+' ('+d.total+')'; }
-                    else { status.style.color='#dc2626'; status.textContent='✗ '+((d&&d.error)||'failed').slice(0,26); }
-                  })
-                  .catch(function(e){ status.style.color='#dc2626'; status.textContent='✗ error'; });
-              }
-              function importOne(btn){ var row=btn.closest('.cred-row'); return doImport(row.getAttribute('data-pageid'), row.querySelector('.cred-status')); }
-              function importList(ids){
-                var prog=document.getElementById('imp-progress'); var i=0, done=0;
-                function next(){
-                  if(i>=ids.length){ prog.textContent='Done — imported '+done+' of '+ids.length+' pages'; return; }
-                  var pageId=ids[i]; i++;
-                  prog.textContent='Importing '+i+' of '+ids.length+'…';
-                  var row=document.querySelector('.cred-row[data-pageid="'+pageId+'"]');
-                  var status=row?row.querySelector('.cred-status'):{style:{}};
-                  doImport(pageId,status).then(function(){ done++; next(); });
-                }
-                next();
-              }
-              function importSelected(){
-                var sel=document.querySelectorAll('.imp-sel:checked'); var ids=[];
-                for(var i=0;i<sel.length;i++) ids.push(sel[i].value);
-                if(!ids.length){ alert('Tick the pages you want first.'); return; }
-                if(!confirm('Import contacts for '+ids.length+' selected page(s)?')) return;
-                importList(ids);
-              }
-              function importAllPagesContacts(){
-                var b=document.querySelectorAll('.imp-sel'); var ids=[];
-                for(var i=0;i<b.length;i++) ids.push(b[i].value);
-                if(!ids.length) return;
-                if(!confirm('Import contacts for ALL '+ids.length+' pages? This can take a while.')) return;
-                importList(ids);
-              }
-              function restoreBackup(input){
-                var file = input.files && input.files[0];
-                if(!file){ return; }
-                if(!confirm('Restore from "'+file.name+'"? This OVERWRITES all current pages, fans, templates, stats and settings with the backup. A safety copy of your current data is saved automatically first. Continue?')){ input.value=''; return; }
-                var reader = new FileReader();
-                reader.onload = function(){
-                  var prog = document.getElementById('imp-progress');
-                  if(prog){ prog.style.color='#6b7280'; prog.textContent='Restoring backup…'; }
-                  fetch('/restore-backup',{method:'POST',headers:{'Content-Type':'application/json'},body:reader.result})
-                    .then(function(r){return r.json();})
-                    .then(function(d){
-                      if(d&&d.ok){ alert('Restore complete — '+d.restored+' files restored. The page will reload now. Tip: redeploy/restart the app so scheduled sends re-arm.'); location.reload(); }
-                      else { alert('Restore failed: '+((d&&d.error)||'unknown error')); if(prog){ prog.textContent=''; } }
-                    })
-                    .catch(function(e){ alert('Restore error: '+e.message); if(prog){ prog.textContent=''; } });
-                  input.value='';
-                };
-                reader.readAsText(file);
-              }
-            </script>
-          `
+                  .then(function(d){ if(d&&d.ok){ alert('Restore complete — '+d.restored+' files restored. Page will reload.'); location.reload(); } else { alert('Restore failed: '+((d&&d.error)||'unknown error')); } })
+                  .catch(function(e){ alert('Restore error: '+e.message); });
+                input.value='';
+              }; reader.readAsText(file);
+            }
+          </script>
+        `
       }
     </div>
 
     <script>
       (function() {
-        function fmtTime(s){ var m=Math.floor(s/60), sec=s%60; return m>0?(m+'m'):(sec+'s'); }
         function pollAll() {
           var cells = document.querySelectorAll('.bp-cell');
           cells.forEach(function(cell) {
@@ -1669,12 +1685,10 @@ function renderAllPagesView(pages, req) {
                     + '<span style="font-size:10px;color:#6b7280;">' + d.done + '/' + d.total + '</span>'
                     + '<div style="background:#e2e8f0;border-radius:999px;height:5px;margin-top:3px;overflow:hidden;"><div style="background:#6366f1;height:100%;width:' + pct + '%;"></div></div>';
                 }
-              })
-              .catch(function(){});
+              }).catch(function(){});
           });
         }
-        pollAll();
-        setInterval(pollAll, 5000);
+        pollAll(); setInterval(pollAll, 5000);
       })();
     </script>
 
@@ -1682,10 +1696,10 @@ function renderAllPagesView(pages, req) {
 
     <div class="card">
       <h2>➕ Add New Page</h2>
-      <p style="color:#6b7280;font-size:13px;">Paste the Page ID and Page Access Token from Facebook Developer. Optional fields below override the defaults for this specific page.</p>
+      <p style="color:#6b7280;font-size:13px;">New pages default to: ⏸️ Broadcast Paused · 🛡️ Auto-cleanup Disabled. Enable them manually after setup.</p>
 
       <div style="background:#eef6ff;border:1px solid #b5d4f4;border-radius:8px;padding:12px 14px;margin-bottom:14px;">
-        <div style="font-size:12px;font-weight:600;color:#0c447c;margin-bottom:8px;">📋 Paste these into Facebook Developer when setting up the webhook:</div>
+        <div style="font-size:12px;font-weight:600;color:#0c447c;margin-bottom:8px;">📋 Paste into Facebook Developer:</div>
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
           <span style="font-size:11px;color:#0c447c;font-weight:600;min-width:100px;">Callback URL:</span>
           <input type="text" id="webhook-url" value="${esc(PUBLIC_URL)}/webhook" readonly onclick="this.select();" style="flex:1;min-width:240px;padding:6px 10px;font-family:monospace;font-size:12px;background:#fff;border:1px solid #b5d4f4;border-radius:5px;color:#0c447c;"/>
@@ -1696,7 +1710,7 @@ function renderAllPagesView(pages, req) {
           <input type="text" id="verify-token" value="${esc(VERIFY_TOKEN)}" readonly onclick="this.select();" style="flex:1;min-width:240px;padding:6px 10px;font-family:monospace;font-size:12px;background:#fff;border:1px solid #b5d4f4;border-radius:5px;color:#0c447c;"/>
           <button type="button" onclick="(function(b){var i=document.getElementById('verify-token');i.select();document.execCommand('copy');var t=b.innerText;b.innerText='✓ Copied';setTimeout(function(){b.innerText=t;},1200);})(this)" style="padding:6px 12px;background:#3a8dde;color:#fff;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;">📋 Copy</button>
         </div>
-        <div style="font-size:11px;color:#4a5568;margin-top:8px;">Subscribe to: <code style="background:#fff;padding:1px 5px;border-radius:3px;">messages</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">messaging_postbacks</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">messaging_optins</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">message_reads</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">message_deliveries</code></div>
+        <div style="font-size:11px;color:#4a5568;margin-top:8px;">Subscribe to: <code>messages</code>, <code>messaging_postbacks</code>, <code>messaging_optins</code>, <code>message_reads</code>, <code>message_deliveries</code></div>
       </div>
 
       <form action="/add-page" method="POST">
@@ -1712,72 +1726,36 @@ function renderAllPagesView(pages, req) {
         </div>
         <label>Page Access Token *</label>
         <input name="accessToken" required placeholder="EAAxxx..." style="font-family:monospace;font-size:12px;"/>
-
+        <label>Assign to Group (optional)</label>
+        <select name="group" style="width:100%;padding:9px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;">
+          <option value="">— unassigned —</option>
+          ${getAllGroups(pages).map(g => `<option value="${esc(g)}">${esc(g)}</option>`).join('')}
+        </select>
         <details>
           <summary>Optional: customize this page (otherwise uses defaults)</summary>
           <div class="row">
-            <div>
-              <label>Card Title</label>
-              <input name="title" placeholder="${esc(getDefaults().title)}"/>
-            </div>
-            <div>
-              <label>Card Subtitle</label>
-              <input name="subtitle" placeholder="${esc(getDefaults().subtitle)}"/>
-            </div>
+            <div><label>Card Title</label><input name="title" placeholder="${esc(getDefaults().title)}"/></div>
+            <div><label>Card Subtitle</label><input name="subtitle" placeholder="${esc(getDefaults().subtitle)}"/></div>
           </div>
           <div class="row">
-            <div>
-              <label>Button Text</label>
-              <input name="buttonText" placeholder="${esc(getDefaults().buttonText)}"/>
-            </div>
-            <div>
-              <label>WhatsApp / Redirect URL</label>
-              <input name="whatsapp" placeholder="${esc(getDefaults().whatsapp)}"/>
-            </div>
+            <div><label>Button Text</label><input name="buttonText" placeholder="${esc(getDefaults().buttonText)}"/></div>
+            <div><label>WhatsApp / Redirect URL</label><input name="whatsapp" placeholder="${esc(getDefaults().whatsapp)}"/></div>
           </div>
           <label>Photos (one URL per line)</label>
           <textarea name="photos" placeholder="${esc(getDefaults().photos.join('\n'))}"></textarea>
           <div class="row">
-            <div>
-              <label>Daily Broadcast Time (HH:MM)</label>
-              <input name="broadcastTime" placeholder="${esc(getDefaults().broadcastTime)}"/>
-            </div>
-            <div>
-              <label>Timezone</label>
-              <input name="timezone" placeholder="${esc(getDefaults().timezone)}"/>
-            </div>
+            <div><label>Daily Broadcast Time (HH:MM)</label><input name="broadcastTime" placeholder="${esc(getDefaults().broadcastTime)}"/></div>
+            <div><label>Timezone</label><input name="timezone" placeholder="${esc(getDefaults().timezone)}"/></div>
           </div>
           <div class="row">
             <div>
               <label>Spacing Between Sends</label>
               ${renderSpacingSelect('spacingSeconds', getDefaults().spacingSeconds)}
-              <div class="helper">Higher seconds = safer. Default 10s.</div>
-            </div>
-            <div>
-              <label>Broadcast Enabled by Default?</label>
-              <select name="broadcastEnabled">
-                <option value="true">Yes — daily auto-send ON</option>
-                <option value="false">No — paused</option>
-              </select>
             </div>
           </div>
         </details>
-
         <button type="submit" class="btn btn-green">➕ Add Page</button>
       </form>
-    </div>
-
-    <div class="card">
-      <h2>ℹ️ Setup Reminder (Facebook side)</h2>
-      <p style="font-size:13px;line-height:1.7;">For each new page on the Facebook Developer side:</p>
-      <ol style="font-size:13px;line-height:1.7;color:#4a5568;">
-        <li>Create a new FB Developer App (or attach the page to an existing one)</li>
-        <li>Set Callback URL: <code style="background:#f0f1f5;padding:2px 6px;border-radius:3px;">${esc(PUBLIC_URL || 'https://YOUR-RAILWAY/webhook')}/webhook</code></li>
-        <li>Set Verify Token: <code style="background:#f0f1f5;padding:2px 6px;border-radius:3px;">${esc(VERIFY_TOKEN)}</code></li>
-        <li>Subscribe to: <code>messages</code>, <code>messaging_postbacks</code>, <code>messaging_optins</code>, <code>message_reads</code>, <code>message_deliveries</code></li>
-        <li>Switch app to LIVE mode</li>
-        <li>Generate Page Access Token → paste it above ☝️</li>
-      </ol>
     </div>
   </div></body></html>`;
 }
@@ -1824,10 +1802,16 @@ function renderPageView(page, req) {
           ? '<span class="badge-current">✓ ACTIVE</span>'
           : `<a href="/set-active-photo?page=${esc(page.pageId)}&index=${i}" class="ph-btn ph-active">★ Set Active</a>`
         }
-        ${(page.photos.length > 1) ? `<a href="/remove-photo?page=${esc(page.pageId)}&index=${i}" onclick="return confirm('Remove this photo?')" class="ph-btn ph-remove" title="Remove">× Remove</a>` : ''}
+        ${(page.photos.length > 1) ? `<a href="/remove-photo?page=${esc(page.pageId)}&index=${i}" onclick="return confirm('Remove this photo?')" class="ph-btn ph-remove">× Remove</a>` : ''}
       </div>
     </div>`;
   }).join('');
+
+  const pages = loadPages();
+  const groups = getAllGroups(pages);
+  const groupOpts = ['', ...groups].map(g =>
+    `<option value="${esc(g)}" ${(page.group || '') === g ? 'selected' : ''}>${g || '— unassigned —'}</option>`
+  ).join('');
 
   return `<div class="container">
     ${renderAlerts(req)}
@@ -1836,14 +1820,11 @@ function renderPageView(page, req) {
       <div style="flex:1;min-width:200px;">
         <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Page Status</div>
         <div style="font-size:16px;font-weight:700;color:#1a1d2e;margin-top:2px;">
-          ${page.broadcastEnabled
-            ? '<span style="color:#28a745;">🟢 Active</span> — daily auto-broadcast ON'
-            : '<span style="color:#f59e0b;">⏸️ Paused</span> — daily auto-broadcast OFF'}
+          ${page.broadcastEnabled ? '<span style="color:#28a745;">🟢 Active</span> — daily auto-broadcast ON' : '<span style="color:#f59e0b;">⏸️ Paused</span> — daily auto-broadcast OFF'}
         </div>
         <div style="font-size:13px;color:#475569;margin-top:4px;">
-          ${page.sendNowEnabled !== false
-            ? '<span style="color:#16a34a;">✅ Send Now ON</span> — included in bulk "Send Now to All"'
-            : '<span style="color:#f59e0b;">🚫 Send Now OFF</span> — skipped by bulk "Send Now to All"'}
+          ${page.sendNowEnabled !== false ? '<span style="color:#16a34a;">✅ Send Now ON</span>' : '<span style="color:#f59e0b;">🚫 Send Now OFF</span>'}
+          &nbsp;·&nbsp; Group: <span class="group-badge ${page.group ? '' : 'unassigned'}">${esc(page.group || 'unassigned')}</span>
         </div>
       </div>
       <div style="display:flex;flex-direction:column;gap:6px;">
@@ -1863,6 +1844,14 @@ function renderPageView(page, req) {
             : '<button type="submit" class="qbtn qbtn-resume" style="padding:8px 14px;font-size:13px;width:100%;">✅ Resume Send Now</button>'
           }
         </form>
+        <form action="/group-assign" method="POST" style="margin:0;display:flex;gap:5px;">
+          <input type="hidden" name="pageId" value="${esc(page.pageId)}"/>
+          <input type="hidden" name="returnTo" value="page"/>
+          <select name="group" style="padding:6px 8px;font-size:12px;border:1px solid #c4b5fd;border-radius:5px;color:#6d28d9;font-weight:600;">
+            ${groupOpts}
+          </select>
+          <button type="submit" class="qbtn" style="background:#6d28d9;padding:8px 10px;">📦 Set Group</button>
+        </form>
       </div>
     </div>
 
@@ -1875,8 +1864,8 @@ function renderPageView(page, req) {
       var effective = isGlobal ? gMode : pMode;
       return `
     <div class="card" style="border:2px solid #e9d5ff;">
-      <h2>🎚️ Content Mode <span style="font-size:12px;font-weight:400;color:#7c3aed;">— what this page sends when randomized/broadcast</span></h2>
-      <p style="color:#6b7280;font-size:13px;">Effective mode right now: <strong style="color:${effective === 'templates' ? '#7c3aed' : '#0c447c'};">${effective === 'templates' ? '🎴 Templates (complete cards)' : '📷 Classic (random photo + URL)'}</strong></p>
+      <h2>🎚️ Content Mode</h2>
+      <p style="color:#6b7280;font-size:13px;">Effective mode: <strong style="color:${effective === 'templates' ? '#7c3aed' : '#0c447c'};">${effective === 'templates' ? '🎴 Templates' : '📷 Classic'}</strong></p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
         <form action="/set-page-mode?page=${esc(page.pageId)}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="classic"/>
           <button type="submit" class="btn" style="background:${isClassic ? '#16a34a' : '#e2e8f0'};color:${isClassic ? '#fff' : '#475569'};">${isClassic ? '✓ ' : ''}📷 Classic</button>
@@ -1885,10 +1874,9 @@ function renderPageView(page, req) {
           <button type="submit" class="btn" style="background:${isTemplates ? '#16a34a' : '#e2e8f0'};color:${isTemplates ? '#fff' : '#475569'};">${isTemplates ? '✓ ' : ''}🎴 Templates</button>
         </form>
         <form action="/set-page-mode?page=${esc(page.pageId)}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="global"/>
-          <button type="submit" class="btn" style="background:${isGlobal ? '#16a34a' : '#e2e8f0'};color:${isGlobal ? '#fff' : '#475569'};">${isGlobal ? '✓ ' : ''}🌐 Use Global (${gMode})</button>
+          <button type="submit" class="btn" style="background:${isGlobal ? '#16a34a' : '#e2e8f0'};color:${isGlobal ? '#fff' : '#475569'};">${isGlobal ? '✓ ' : ''}🌐 Global (${gMode})</button>
         </form>
       </div>
-      <div class="helper" style="margin-top:10px;">📷 Classic = random photo from shared pool + random URL from this page's set. 🎴 Templates = random complete card from this page's set templates. 🌐 Global follows the main dashboard's setting (currently <strong>${gMode}</strong>).</div>
     </div>`;
     })()}
 
@@ -1921,17 +1909,15 @@ function renderPageView(page, req) {
               if (d.status === 'complete') {
                 bar.style.background = '#22c55e';
                 headline.innerHTML = '✅ Broadcast complete — all ' + d.total + ' fans done';
-                detail.textContent = 'Sent ' + d.done + ' messages in ' + fmtTime(d.elapsedSec) + '. (' + (d.type === 'text' ? 'plain text' : 'photo card') + ')';
+                detail.textContent = 'Sent ' + d.done + ' messages in ' + fmtTime(d.elapsedSec) + '.';
               } else {
                 bar.style.background = '#6366f1';
                 headline.innerHTML = '📡 Sending… ' + d.done + ' / ' + d.total + ' (' + pct + '%)';
                 detail.textContent = d.remaining + ' fans remaining · running ' + fmtTime(d.elapsedSec);
               }
-            })
-            .catch(function(){});
+            }).catch(function(){});
         }
-        poll();
-        setInterval(poll, 5000);
+        poll(); setInterval(poll, 5000);
       })();
     </script>
 
@@ -1943,17 +1929,13 @@ function renderPageView(page, req) {
           <span style="font-size:12px;color:#6b7280;font-family:monospace;margin-left:auto;">ID: ${esc(page.pageId)} · ${esc(page.label)}</span>
         </summary>
         <div style="padding:0 20px 20px;">
-          <p style="color:#6b7280;font-size:13px;">Update token (fix Facebook error code 190) or rename the page. Fans, stats, photos, and history are all kept.</p>
-          <label>Page ID</label>
-          <input value="${esc(page.pageId)}" readonly onclick="this.select();" style="font-family:monospace;font-size:12px;width:100%;background:#f8fafc;cursor:pointer;" title="Click to select / copy"/>
-          <div class="helper" style="margin:4px 0 12px;">This is fixed — it identifies the Facebook page. Click to copy.</div>
           <form action="/edit-page?page=${esc(page.pageId)}" method="POST">
             <label>Page Access Token</label>
             <input name="accessToken" placeholder="Paste new EAAxxx... token (leave blank to keep current)" style="font-family:monospace;font-size:12px;width:100%;"/>
-            <div class="helper" style="margin:4px 0 12px;">Current token: <code style="font-size:11px;">${page.accessToken ? esc(page.accessToken.slice(0, 12)) + '…' + esc(page.accessToken.slice(-6)) : '(none)'}</code></div>
-            <label>Page Label / Nickname</label>
+            <div class="helper">Current: <code>${page.accessToken ? esc(page.accessToken.slice(0, 12)) + '…' + esc(page.accessToken.slice(-6)) : '(none)'}</code></div>
+            <label>Page Label</label>
             <input name="label" value="${esc(page.label)}" style="width:100%;"/>
-            <button type="submit" class="btn btn-green" style="margin-top:12px;">🔑 Update Page Settings</button>
+            <button type="submit" class="btn btn-green" style="margin-top:12px;">🔑 Update</button>
           </form>
         </div>
       </details>
@@ -1963,14 +1945,14 @@ function renderPageView(page, req) {
       <h2>📊 ${esc(page.label)} — Stats</h2>
       <div class="grid">
         <div class="stat"><div class="v">${fans.length}</div><div class="l">Active Fans</div></div>
-        <div class="stat"><div class="v">${imported}</div><div class="l">Imported (old)</div></div>
-        <div class="stat"><div class="v">${newOrganic}</div><div class="l">New (organic)</div></div>
+        <div class="stat"><div class="v">${imported}</div><div class="l">Imported</div></div>
+        <div class="stat"><div class="v">${newOrganic}</div><div class="l">New Organic</div></div>
         <div class="stat"><div class="v">${fansToday}</div><div class="l">New Today</div></div>
         <div class="stat"><div class="v">${fansThisWeek}</div><div class="l">New This Week</div></div>
         <div class="stat"><div class="v">${growth >= 0 ? '+' : ''}${growth}</div><div class="l">Growth (baseline ${baseline})</div></div>
       </div>
       <div style="background:#eef6ff;border:1px solid #b5d4f4;border-radius:8px;padding:10px 14px;margin-top:12px;font-size:12px;color:#0c447c;">
-        🧹 <strong>Auto-cleanup ${page.cleanupThreshold === 0 ? '<span style="color:#dc3545;">DISABLED</span>' : `threshold = <strong>${page.cleanupThreshold === undefined ? 1 : page.cleanupThreshold}</strong>`}:</strong> ${removedTotal} fan${removedTotal === 1 ? '' : 's'} removed (${removedToday} today). ${(page.cleanupThreshold === undefined || page.cleanupThreshold === 1) ? 'Fan removed on FIRST failed send.' : `Fan removed after ${page.cleanupThreshold} consecutive failed sends.`} Auto-re-added if they message your page back. Change threshold in Schedule below.
+        🧹 <strong>Auto-cleanup ${page.cleanupThreshold === 0 ? '<span style="color:#dc3545;">DISABLED</span>' : `threshold = ${page.cleanupThreshold === undefined ? 1 : page.cleanupThreshold}`}:</strong> ${removedTotal} fan${removedTotal === 1 ? '' : 's'} removed (${removedToday} today).
       </div>
       <h3>📨 Message Funnel</h3>
       <div class="funnel">
@@ -1981,11 +1963,10 @@ function renderPageView(page, req) {
         <div class="step"><div class="v">${clicksToday}</div><div class="l">Clicks Today</div></div>
       </div>
       <div class="grid" style="margin-top:14px;">
-        <div class="stat"><div class="v">${sent}</div><div class="l">Sent ✅ (all-time)</div></div>
-        <div class="stat"><div class="v">${failed}</div><div class="l">Failed ❌ (all-time)</div></div>
+        <div class="stat"><div class="v">${sent}</div><div class="l">Sent ✅</div></div>
+        <div class="stat"><div class="v">${failed}</div><div class="l">Failed ❌</div></div>
         <div class="stat" style="border-left-color:#3a8dde;"><div class="v">${removedTotal}</div><div class="l">🧹 Auto-Removed</div></div>
         <div class="stat"><div class="v">${openRate}%</div><div class="l">Open Rate</div></div>
-        <div class="stat"><div class="v">${page.broadcastEnabled ? 'ON' : 'OFF'}</div><div class="l">Daily Broadcast</div></div>
       </div>
     </div>
 
@@ -2006,24 +1987,14 @@ function renderPageView(page, req) {
             <td style="text-align:right;color:#28a745;font-weight:600;">${d.sent}</td>
             <td style="text-align:right;color:#dc3545;font-weight:600;">${d.failed}</td>
             <td style="text-align:right;">${total > 0 ? successRate + '%' : '—'}</td>
-            <td style="width:40%;">
-              <div style="display:flex;height:14px;background:#f0f1f5;border-radius:3px;overflow:hidden;">
-                <div style="width:${sentPct}%;background:#28a745;"></div>
-                <div style="width:${failedPct}%;background:#dc3545;"></div>
-              </div>
-            </td>
+            <td style="width:40%;"><div style="display:flex;height:14px;background:#f0f1f5;border-radius:3px;overflow:hidden;"><div style="width:${sentPct}%;background:#28a745;"></div><div style="width:${failedPct}%;background:#dc3545;"></div></div></td>
           </tr>`;
         };
-        return `<table>
-          <thead><tr><th>Date</th><th style="text-align:right;">Sent ✅</th><th style="text-align:right;">Failed ❌</th><th style="text-align:right;">Success</th><th>Volume</th></tr></thead>
-          <tbody>${renderRow(today, true)}</tbody>
-        </table>
+        return `<table><thead><tr><th>Date</th><th style="text-align:right;">Sent ✅</th><th style="text-align:right;">Failed ❌</th><th style="text-align:right;">Success</th><th>Volume</th></tr></thead>
+          <tbody>${renderRow(today, true)}</tbody></table>
         <details style="margin-top:10px;">
           <summary style="cursor:pointer;font-weight:600;color:#3a8dde;font-size:13px;padding:6px 0;">▼ Show last 14 days</summary>
-          <table style="margin-top:8px;">
-            <tbody>${older.map(d => renderRow(d, false)).join('')}</tbody>
-          </table>
-          <div class="helper" style="margin-top:6px;">Green bar = sent · Red bar = failed · Width relative to busiest day in 14 days.</div>
+          <table style="margin-top:8px;"><tbody>${older.map(d => renderRow(d, false)).join('')}</tbody></table>
         </details>`;
       })()}
     </div>
@@ -2032,65 +2003,42 @@ function renderPageView(page, req) {
       <h2>✏️ Card / Message Editor</h2>
       <form action="/update-settings?page=${esc(page.pageId)}" method="POST">
         <div class="row">
-          <div>
-            <label>Card Title</label>
-            <input name="title" value="${esc(page.title)}"/>
-          </div>
-          <div>
-            <label>Card Subtitle</label>
-            <input name="subtitle" value="${esc(page.subtitle)}"/>
-          </div>
+          <div><label>Card Title</label><input name="title" value="${esc(page.title)}"/></div>
+          <div><label>Card Subtitle</label><input name="subtitle" value="${esc(page.subtitle)}"/></div>
         </div>
         <div class="row">
-          <div>
-            <label>Button Text</label>
-            <input name="buttonText" value="${esc(page.buttonText)}"/>
-          </div>
-          <div>
-            <label>WhatsApp / Redirect URL</label>
-            <input name="whatsapp" value="${esc(page.whatsapp)}"/>
-          </div>
+          <div><label>Button Text</label><input name="buttonText" value="${esc(page.buttonText)}"/></div>
+          <div><label>WhatsApp / Redirect URL</label><input name="whatsapp" value="${esc(page.whatsapp)}"/></div>
         </div>
-        <label>Active Photo URL (the one being sent now)</label>
+        <label>Active Photo URL</label>
         <input name="currentPhoto" value="${esc(page.currentPhoto || '')}"/>
-        <label>Page Label / Nickname</label>
+        <label>Page Label</label>
         <input name="label" value="${esc(page.label)}"/>
         <button type="submit" class="btn btn-green">💾 Save Settings</button>
       </form>
     </div>
 
     <div class="card">
-      <h2>📝 Template Manager — 2 Templates</h2>
-      <p style="font-size:12px;color:#6b7280;margin-bottom:14px;">Choose what to broadcast: the photo card (Template 1) OR a plain text message (Template 2). Each has its own Send Now button.</p>
-
+      <h2>📝 Template Manager</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-
-        <!-- TEMPLATE 1: CARD -->
         <div style="background:#eef6ff;border:1px solid #b5d4f4;border-radius:8px;padding:12px;">
           <h3 style="margin:0 0 8px;color:#0c447c;font-size:14px;">🖼️ Template 1: Photo Card</h3>
-          <p style="font-size:11px;color:#0c447c;margin:0 0 10px;line-height:1.4;">Sends the card with image + title + subtitle + button (configured in Card / Message Editor above).</p>
           <div style="background:#fff;border-radius:6px;padding:8px;margin-bottom:10px;border:1px solid #d1d5db;">
-            <div style="font-size:10px;color:#6b7280;margin-bottom:3px;">Preview:</div>
             <div style="font-size:11px;font-weight:600;color:#1a1d2e;">${esc(page.title || '(no title)')}</div>
-            <div style="font-size:10px;color:#4a5568;margin:2px 0;">${esc((page.subtitle || '').slice(0, 50))}${(page.subtitle || '').length > 50 ? '...' : ''}</div>
-            <div style="font-size:10px;color:#3a8dde;">+ image + button</div>
+            <div style="font-size:10px;color:#4a5568;margin:2px 0;">${esc((page.subtitle || '').slice(0, 50))}</div>
           </div>
           <a href="/send-now?page=${esc(page.pageId)}" class="btn btn-green" style="display:block;text-align:center;margin:0;" onclick="return confirm('Send PHOTO CARD to ${fans.length} fans now?')">🚀 Send Card to All</a>
         </div>
-
-        <!-- TEMPLATE 2: PLAIN TEXT -->
         <div style="background:#fef3e7;border:1px solid #fde68a;border-radius:8px;padding:12px;">
           <h3 style="margin:0 0 8px;color:#92400e;font-size:14px;">💬 Template 2: Plain Text</h3>
-          <p style="font-size:11px;color:#92400e;margin:0 0 10px;line-height:1.4;">Just a simple text message — no card, no photo, no button. Perfect for questions.</p>
           <form action="/save-text-template?page=${esc(page.pageId)}" method="POST" style="margin:0;">
             <textarea name="textTemplate" placeholder="e.g. Hello! Where are you from? 💕" style="width:100%;min-height:80px;padding:7px 9px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;font-family:inherit;resize:vertical;background:#fff;">${esc(page.textTemplate || '')}</textarea>
             <button type="submit" class="btn" style="background:#92400e;width:100%;margin-top:6px;">💾 Save Text</button>
           </form>
           <form action="/send-text-now?page=${esc(page.pageId)}" method="POST" style="margin:6px 0 0;">
-            <button type="submit" class="btn btn-green" style="display:block;text-align:center;margin:0;width:100%;" onclick="return confirm('Send TEXT MESSAGE to ${fans.length} fans now?\\n\\nText: \\&quot;${esc((page.textTemplate || '').replace(/"/g, '\\\\&quot;').slice(0, 80))}\\&quot;\\n\\nSave first if you just edited.')">🚀 Send Text to All</button>
+            <button type="submit" class="btn btn-green" style="display:block;text-align:center;margin:0;width:100%;" onclick="return confirm('Send TEXT to ${fans.length} fans now?')">🚀 Send Text to All</button>
           </form>
         </div>
-
       </div>
     </div>
 
@@ -2098,20 +2046,13 @@ function renderPageView(page, req) {
       <h2>📅 Schedule</h2>
       <form action="/update-schedule?page=${esc(page.pageId)}" method="POST">
         <div class="row">
-          <div>
-            <label>Daily Broadcast Time (HH:MM)</label>
-            <input name="broadcastTime" value="${esc(page.broadcastTime)}"/>
-          </div>
-          <div>
-            <label>Timezone</label>
-            <input name="timezone" value="${esc(page.timezone)}"/>
-          </div>
+          <div><label>Daily Broadcast Time (HH:MM)</label><input name="broadcastTime" value="${esc(page.broadcastTime)}"/></div>
+          <div><label>Timezone</label><input name="timezone" value="${esc(page.timezone)}"/></div>
         </div>
         <div class="row">
           <div>
             <label>Spacing Between Sends</label>
             ${renderSpacingSelect('spacingSeconds', page.spacingSeconds || 10)}
-            <div class="helper">Higher seconds = safer. Default 10s.</div>
           </div>
           <div>
             <label>Daily Auto-Broadcast</label>
@@ -2126,13 +2067,12 @@ function renderPageView(page, req) {
             <label>🧹 Auto-Cleanup Threshold</label>
             <select name="cleanupThreshold">
               <option value="0" ${page.cleanupThreshold === 0 ? 'selected' : ''}>0 — Disabled (never remove fans)</option>
-              <option value="1" ${(page.cleanupThreshold === undefined || page.cleanupThreshold === 1) ? 'selected' : ''}>1 — Remove on 1st failure (default, fastest cleanup)</option>
+              <option value="1" ${(page.cleanupThreshold === undefined || page.cleanupThreshold === 1) ? 'selected' : ''}>1 — Remove on 1st failure</option>
               <option value="2" ${page.cleanupThreshold === 2 ? 'selected' : ''}>2 — Remove after 2 consecutive failures</option>
-              <option value="3" ${page.cleanupThreshold === 3 ? 'selected' : ''}>3 — Safer (remove after 3 in a row)</option>
-              <option value="5" ${page.cleanupThreshold === 5 ? 'selected' : ''}>5 — Very safe (remove after 5 in a row)</option>
+              <option value="3" ${page.cleanupThreshold === 3 ? 'selected' : ''}>3 — Remove after 3 in a row</option>
+              <option value="5" ${page.cleanupThreshold === 5 ? 'selected' : ''}>5 — Very safe</option>
               <option value="10" ${page.cleanupThreshold === 10 ? 'selected' : ''}>10 — Almost never remove</option>
             </select>
-            <div class="helper">Default 1 = aggressive cleanup, single fail = removed. They get re-added if they message back. Any success resets the counter.</div>
           </div>
           <div></div>
         </div>
@@ -2148,36 +2088,27 @@ function renderPageView(page, req) {
         <input name="photoUrl" placeholder="https://i.imgur.com/..."/>
         <button type="submit" class="btn btn-blue">➕ Add Photo</button>
       </form>
-      <div class="helper" style="margin-top:8px;">All cards now use <strong>square (1:1)</strong> photos — bigger card on Messenger. Upload square photos (1:1 ratio) for best results, or Facebook will auto-crop. Green border = currently active. Click any URL field to select it for copy.</div>
     </div>
 
     ${renderPageLibrarySection(page)}
 
     <div class="card">
       <h2>📣 Broadcasts</h2>
-
       <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px;margin-bottom:14px;">
         <h3 style="margin-top:0;color:#92400e;">🧪 Test Send to Specific PSID</h3>
-        <p style="font-size:12px;color:#92400e;margin:0 0 8px;">Sends ONE card to a specific PSID (your own, a friend's, etc.) using current page settings. Use this to verify the card looks right BEFORE mass-broadcasting. Does NOT add the PSID to your fan list.</p>
         <form action="/test-send?page=${esc(page.pageId)}" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-          <div style="flex:1;min-width:200px;">
-            <label>PSID</label>
-            <input name="psid" placeholder="e.g. 1234567890" required/>
-          </div>
+          <div style="flex:1;min-width:200px;"><label>PSID</label><input name="psid" placeholder="e.g. 1234567890" required/></div>
           <button type="submit" class="btn btn-orange" style="margin-top:0;">🧪 Send Test</button>
         </form>
       </div>
-
-      <p style="font-size:13px;color:#6b7280;">Send to ALL ${fans.length} fans, spaced <strong>${page.spacingSeconds || 10}s</strong> apart (change in Schedule section above). Estimated total time: <strong>~${Math.ceil(fans.length * (page.spacingSeconds || 10) / 60)} min</strong>.</p>
-      <a href="/send-now?page=${esc(page.pageId)}" class="btn btn-green" onclick="return confirm('Send to ${fans.length} fans now?')">🚀 Send Now (rotating subtitle)</a>
-
+      <p style="font-size:13px;color:#6b7280;">Send to ALL ${fans.length} fans, spaced <strong>${page.spacingSeconds || 10}s</strong> apart. Est. time: <strong>~${Math.ceil(fans.length * (page.spacingSeconds || 10) / 60)} min</strong>.</p>
+      <a href="/send-now?page=${esc(page.pageId)}" class="btn btn-green" onclick="return confirm('Send to ${fans.length} fans now?')">🚀 Send Now</a>
       <h3>Custom Broadcast</h3>
       <form action="/send-custom?page=${esc(page.pageId)}" method="POST">
-        <label>Photo URL (optional — uses current photo if blank)</label>
+        <label>Photo URL (optional)</label>
         <input name="photo" placeholder="${esc(page.currentPhoto || '')}"/>
         <button type="submit" class="btn btn-blue" onclick="return confirm('Send custom broadcast to ${fans.length} fans?')">📤 Send Custom</button>
       </form>
-
       <h3>Schedule One-Time</h3>
       <form action="/schedule-once?page=${esc(page.pageId)}" method="POST">
         <label>Send at</label>
@@ -2191,52 +2122,49 @@ function renderPageView(page, req) {
       <div class="row">
         <div>
           <h3>Import from Facebook</h3>
-          <p style="font-size:13px;color:#6b7280;">Pulls all current Messenger conversations for this page.</p>
           <a href="/import-contacts?page=${esc(page.pageId)}" class="btn btn-blue">📥 Import All Contacts</a>
         </div>
         <div>
           <h3>Export / Backup</h3>
-          <p style="font-size:13px;color:#6b7280;">Download all PSIDs as .txt — do this BEFORE redeploy.</p>
           <a href="/export-fans?page=${esc(page.pageId)}" class="btn btn-blue">💾 Export Fan List</a>
         </div>
       </div>
-
-      <h3>Bulk Import (paste or upload)</h3>
+      <h3>Bulk Import</h3>
       <form action="/bulk-add-fans?page=${esc(page.pageId)}" method="POST">
-        <label>Paste PSIDs (one per line, or comma-separated)</label>
+        <label>Paste PSIDs (one per line or comma-separated)</label>
         <textarea name="psids" placeholder="1234567890&#10;9876543210"></textarea>
         <button type="submit" class="btn btn-green">📤 Bulk Import</button>
       </form>
-
-      <h3>Manual / Misc</h3>
+      <h3>Manual</h3>
       <form action="/add-fan?page=${esc(page.pageId)}" method="POST" style="margin-bottom:10px;">
         <label>Add single PSID</label>
         <input name="psid"/>
         <button type="submit" class="btn btn-green">➕ Add Fan</button>
       </form>
       <form action="/set-baseline?page=${esc(page.pageId)}" method="POST" style="margin-bottom:10px;">
-        <label>Set Baseline (for growth tracking)</label>
+        <label>Set Baseline</label>
         <input name="value" type="number" value="${page.baselineFans || 0}"/>
         <button type="submit" class="btn btn-orange">📌 Set Baseline</button>
       </form>
-      <a href="/clear-fans?page=${esc(page.pageId)}" class="btn btn-red" onclick="return confirm('CLEAR all ${fans.length} fans for this page? Export first!')">🗑️ Clear All Fans</a>
+      <a href="/clear-fans?page=${esc(page.pageId)}" class="btn btn-red" onclick="return confirm('CLEAR all ${fans.length} fans? Export first!')">🗑️ Clear All Fans</a>
       <form action="/reset-stats?page=${esc(page.pageId)}" method="POST" style="margin-top:10px;">
-        <button type="submit" class="btn" style="background:#dc2626;color:#fff;" onclick="return confirm('Reset stats to 0 for ${esc(page.label)}?\\n\\nClears clicks, messages sent/failed, and daily history.\\n\\n✅ Fans KEPT (${fans.length} fans stay).\\n❌ Stats history erased.')">📊 Reset Stats (keep fans)</button>
-        <div class="helper" style="margin-top:6px;">Zeroes clicks + messages + daily history. Fan count stays at ${fans.length}.</div>
+        <button type="submit" class="btn" style="background:#dc2626;color:#fff;" onclick="return confirm('Reset stats for ${esc(page.label)}? Fans kept.')">📊 Reset Stats (keep fans)</button>
       </form>
     </div>
 
     <div class="card danger-zone">
       <h2>⚠️ Danger Zone</h2>
-      <p style="font-size:13px;color:#991b1b;">Removing the page deletes it from messagebot — fan list, stats, settings all gone. The Facebook side is NOT touched (you can re-add later). Export fans first if you want a backup.</p>
       <form action="/remove-page" method="POST" style="display:inline;">
         <input type="hidden" name="pageId" value="${esc(page.pageId)}"/>
-        <button type="submit" class="btn btn-red" onclick="return confirm('REMOVE page ${esc(page.label)} from messagebot? This deletes fans + stats. The FB page is NOT touched.')">🗑️ Remove This Page from messagebot</button>
+        <button type="submit" class="btn btn-red" onclick="return confirm('REMOVE page ${esc(page.label)} from messagebot? Fans + stats deleted.')">🗑️ Remove This Page</button>
       </form>
     </div>
   </div></body></html>`;
 }
 
+// ============================================
+// MAIN ROUTE
+// ============================================
 app.get('/', (req, res) => {
   const pages = loadPages();
   const selectedPageId = req.query.page;
@@ -2278,14 +2206,13 @@ app.post('/add-page', (req, res) => {
     photos: photos.length ? photos : undefined,
     broadcastTime: b.broadcastTime || undefined,
     timezone: b.timezone || undefined,
-    broadcastEnabled: b.broadcastEnabled === 'false' ? false : true,
-    spacingSeconds: b.spacingSeconds ? parseInt(b.spacingSeconds) : undefined
+    spacingSeconds: b.spacingSeconds ? parseInt(b.spacingSeconds) : undefined,
+    group: b.group || ''
   };
   const newPage = addPage(data);
   if (!newPage) {
-    return res.redirect('/?error=' + encodeURIComponent('Page ID already exists in messagebot'));
+    return res.redirect('/?error=' + encodeURIComponent('Page ID already exists'));
   }
-  // Try setting up messenger profile (greeting + get_started)
   setupMessenger(newPage);
   res.redirect(`/?page=${encodeURIComponent(newPage.pageId)}&added=1`);
 });
@@ -2295,7 +2222,6 @@ app.post('/remove-page', (req, res) => {
   res.redirect('/?removed=1');
 });
 
-// Quick pause/resume toggle from the All Pages table
 app.post('/toggle-page', (req, res) => {
   const pageId = req.body.pageId;
   const page = getPage(pageId);
@@ -2304,19 +2230,83 @@ app.post('/toggle-page', (req, res) => {
   res.redirect(req.body.returnTo === 'page' ? `/?page=${encodeURIComponent(pageId)}&saved=1` : '/?saved=1');
 });
 
-// Toggle the SEND NOW status for a page (controls inclusion in bulk Send Now to All).
-// undefined is treated as enabled (true), so existing pages default to enabled.
 app.post('/toggle-sendnow', (req, res) => {
   const pageId = req.body.pageId;
   const page = getPage(pageId);
   if (!page) return res.redirect('/?error=Unknown+page');
-  const current = page.sendNowEnabled !== false; // undefined => true
+  const current = page.sendNowEnabled !== false;
   updatePage(pageId, { sendNowEnabled: !current });
   res.redirect(req.body.returnTo === 'page' ? `/?page=${encodeURIComponent(pageId)}&saved=1` : '/?saved=1');
 });
 
-// Bulk: SEND NOW to all pages whose Send Now toggle is enabled.
-// optional ?randomize=1 → randomize each page first (set-aware)
+// ============================================
+// PAGE GROUPS ROUTES
+// ============================================
+// Create a new group name (no pages assigned yet)
+app.post('/group-create', (req, res) => {
+  const group = (req.body.group || '').trim();
+  if (!group) return res.redirect('/?error=' + encodeURIComponent('Group name cannot be empty'));
+  // Group is just a string — no separate storage needed. It becomes real when a page uses it.
+  // We just redirect back with a message; user assigns pages via /group-assign.
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Group "' + group + '" created. Now assign pages to it below.'));
+});
+
+// Assign a page to a group (or unassign with empty string)
+app.post('/group-assign', (req, res) => {
+  const pageId = req.body.pageId;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  updatePage(pageId, { group: (req.body.group || '').trim() });
+  if (req.body.returnTo === 'page') {
+    res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+  } else {
+    res.redirect('/?page=all&saved=1');
+  }
+});
+
+// Delete a group — just unassigns all pages in it
+app.post('/group-delete', (req, res) => {
+  const group = (req.body.group || '').trim();
+  if (!group) return res.redirect('/?page=all');
+  const pages = loadPages();
+  pages.forEach(p => {
+    if (p.group === group) updatePage(p.pageId, { group: '' });
+  });
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Group "' + group + '" deleted — pages unassigned'));
+});
+
+// Send Now to a specific GROUP only
+app.post('/send-now-group', (req, res) => {
+  const group = (req.body.group || '').trim();
+  const doRandomize = req.body.randomize === '1';
+  if (!group) return res.redirect('/?error=No+group+selected');
+  const pages = loadPages();
+  const eligible = pages.filter(p => p.group === group && p.sendNowEnabled !== false);
+  if (!eligible.length) {
+    return res.redirect('/?page=all&error=' + encodeURIComponent('No eligible pages in group "' + group + '" (all have Send Now paused or group is empty)'));
+  }
+  let totalFans = 0;
+  const perPage = [];
+  eligible.forEach(p => {
+    let page = getPage(p.pageId);
+    if (doRandomize) page = randomizePage(page, {});
+    const count = broadcastToPage(page, {});
+    totalFans += count;
+    perPage.push({ label: page.label, count, redirect: page.whatsapp });
+  });
+  console.log(`📣 Group Send Now "${group}"${doRandomize ? ' (randomized)' : ''}: ${eligible.length} pages, ${totalFans} fans`);
+  const rows = perPage.map(x => `<tr><td>${esc(x.label)}</td><td style="text-align:right;">${x.count}</td><td style="font-size:11px;color:#6b7280;">${esc((x.redirect||'').replace(/^https?:\/\//,''))}</td></tr>`).join('');
+  res.send(`${renderHead('Group Send')}<div class="container"><div class="card">
+    <h2>📣 Group "${esc(group)}" Send${doRandomize ? ' + Randomize' : ''} Started</h2>
+    <p>Broadcasting to <strong>${eligible.length} pages</strong> in group <strong>${esc(group)}</strong> · <strong>${totalFans} total fans</strong>.</p>
+    <table style="width:100%;margin-top:12px;"><thead><tr><th>Page</th><th style="text-align:right;">Fans</th><th>Redirect</th></tr></thead><tbody>${rows}</tbody></table>
+    <a href="/?page=all" class="btn btn-green" style="margin-top:16px;">← Back to Dashboard</a>
+  </div></div></body></html>`);
+});
+
+// ============================================
+// BULK SEND NOW (ALL)
+// ============================================
 app.post('/send-now-all', (req, res) => {
   const pages = loadPages();
   const doRandomize = req.query.randomize === '1';
@@ -2326,69 +2316,48 @@ app.post('/send-now-all', (req, res) => {
   eligible.forEach(p => {
     let page = getPage(p.pageId);
     if (doRandomize) page = randomizePage(page, {});
-    const count = broadcastToPage(page, doRandomize ? {} : {});
+    const count = broadcastToPage(page, {});
     totalFans += count;
-    perPage.push({ label: page.label, count, photo: page.currentPhoto, redirect: page.whatsapp });
+    perPage.push({ label: page.label, count, redirect: page.whatsapp });
   });
   const skipped = pages.length - eligible.length;
   console.log(`📣 Bulk Send Now${doRandomize ? ' (randomized)' : ''}: ${eligible.length} pages, ${totalFans} fans, ${skipped} skipped`);
-
   const rows = perPage.map(x => `<tr><td>${esc(x.label)}</td><td style="text-align:right;">${x.count}</td><td style="font-size:11px;color:#6b7280;">${esc((x.redirect||'').replace(/^https?:\/\//,''))}</td></tr>`).join('');
   res.send(`${renderHead('Bulk Send')}<div class="container"><div class="card">
     <h2>📣 Bulk Send Now${doRandomize ? ' + Randomize' : ''} Started</h2>
-    <p>Broadcasting to <strong>${eligible.length} active pages</strong> · <strong>${totalFans} total fans</strong>.${skipped ? ` <span style="color:#92400e;">${skipped} page(s) skipped (Send Now paused).</span>` : ''}</p>
-    <table style="width:100%;margin-top:12px;"><thead><tr><th style="text-align:left;">Page</th><th style="text-align:right;">Fans</th><th style="text-align:left;">Redirect</th></tr></thead><tbody>${rows}</tbody></table>
+    <p><strong>${eligible.length} pages</strong> · <strong>${totalFans} total fans</strong>.${skipped ? ` <span style="color:#92400e;">${skipped} skipped (Send Now paused).</span>` : ''}</p>
+    <table style="width:100%;margin-top:12px;"><thead><tr><th>Page</th><th style="text-align:right;">Fans</th><th>Redirect</th></tr></thead><tbody>${rows}</tbody></table>
     <a href="/?page=all" class="btn btn-green" style="margin-top:16px;">← Back to Dashboard</a>
   </div></div></body></html>`);
 });
 
-// Bulk: pause Send Now on ALL pages
 app.post('/pause-sendnow-all', (req, res) => {
   loadPages().forEach(p => updatePage(p.pageId, { sendNowEnabled: false }));
-  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Send Now PAUSED on all pages — bulk Send Now will skip them'));
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Send Now PAUSED on all pages'));
 });
 
-// Bulk: resume Send Now on ALL pages
 app.post('/resume-sendnow-all', (req, res) => {
   loadPages().forEach(p => updatePage(p.pageId, { sendNowEnabled: true }));
   res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Send Now RESUMED on all pages'));
 });
 
-// Bulk: pause daily auto-broadcast on ALL pages
 app.post('/pause-all', (req, res) => {
-  const pages = loadPages();
-  pages.forEach(p => {
-    if (p.broadcastEnabled) updatePage(p.pageId, { broadcastEnabled: false });
-  });
+  loadPages().forEach(p => { if (p.broadcastEnabled) updatePage(p.pageId, { broadcastEnabled: false }); });
   res.redirect('/?saved=1');
 });
 
-// Bulk: resume daily auto-broadcast on ALL pages
 app.post('/resume-all', (req, res) => {
-  const pages = loadPages();
-  pages.forEach(p => {
-    if (!p.broadcastEnabled) updatePage(p.pageId, { broadcastEnabled: true });
-  });
+  loadPages().forEach(p => { if (!p.broadcastEnabled) updatePage(p.pageId, { broadcastEnabled: true }); });
   res.redirect('/?saved=1');
 });
 
-// Bulk: disable auto-cleanup on ALL pages (set threshold to 0 = never remove)
 app.post('/disable-cleanup-all', (req, res) => {
-  const pages = loadPages();
-  pages.forEach(p => {
-    updatePage(p.pageId, { cleanupThreshold: 0 });
-  });
-  console.log(`Bulk: auto-cleanup DISABLED on all ${pages.length} pages`);
+  loadPages().forEach(p => updatePage(p.pageId, { cleanupThreshold: 0 }));
   res.redirect('/?saved=1');
 });
 
-// Bulk: enable auto-cleanup on ALL pages (set threshold to 1 = aggressive)
 app.post('/enable-cleanup-all', (req, res) => {
-  const pages = loadPages();
-  pages.forEach(p => {
-    updatePage(p.pageId, { cleanupThreshold: 1 });
-  });
-  console.log(`Bulk: auto-cleanup ENABLED (threshold=1) on all ${pages.length} pages`);
+  loadPages().forEach(p => updatePage(p.pageId, { cleanupThreshold: 1 }));
   res.redirect('/?saved=1');
 });
 
@@ -2409,7 +2378,6 @@ app.post('/update-settings', (req, res) => {
   res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
 });
 
-// Edit page token + label without losing fans/stats/photos/history.
 app.post('/page-update-inline', (req, res) => {
   const pageId = req.body.pageId;
   const page = getPage(pageId);
@@ -2438,48 +2406,31 @@ app.post('/edit-page', (req, res) => {
   const page = getPage(pageId);
   if (!page) return res.redirect('/?error=Unknown+page');
   const updates = {};
-  // Only update token if a new one was actually pasted (don't wipe on blank)
-  if (req.body.accessToken && req.body.accessToken.trim()) {
-    updates.accessToken = req.body.accessToken.trim();
-  }
-  if (req.body.label && req.body.label.trim()) {
-    updates.label = req.body.label.trim();
-  }
+  if (req.body.accessToken && req.body.accessToken.trim()) updates.accessToken = req.body.accessToken.trim();
+  if (req.body.label && req.body.label.trim()) updates.label = req.body.label.trim();
   updatePage(pageId, updates);
-  // Re-subscribe messenger profile with the (possibly new) token so the page works immediately
-  if (updates.accessToken) {
-    try { setupMessenger(getPage(pageId)); } catch {}
-  }
+  if (updates.accessToken) { try { setupMessenger(getPage(pageId)); } catch {} }
   res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
 });
 
-// Live broadcast progress (polled by the dashboard widget)
 app.get('/broadcast-status', (req, res) => {
   const pageId = req.query.page;
   const b = broadcastProgress[pageId];
   if (!b) return res.json({ active: false });
   const elapsed = (b.finishedAt || Date.now()) - b.startedAt;
-  res.json({
-    active: true,
-    status: b.status,
-    total: b.total,
-    done: b.done,
-    remaining: Math.max(0, b.total - b.done),
-    type: b.type,
-    elapsedSec: Math.round(elapsed / 1000)
-  });
+  res.json({ active: true, status: b.status, total: b.total, done: b.done, remaining: Math.max(0, b.total - b.done), type: b.type, elapsedSec: Math.round(elapsed / 1000) });
 });
 
 app.post('/update-schedule', (req, res) => {
   const pageId = req.query.page;
   if (!getPage(pageId)) return res.redirect('/?error=Unknown+page');
-  const threshold = req.body.cleanupThreshold !== undefined ? parseInt(req.body.cleanupThreshold) : 1;
+  const threshold = req.body.cleanupThreshold !== undefined ? parseInt(req.body.cleanupThreshold) : 0;
   updatePage(pageId, {
     broadcastTime: req.body.broadcastTime,
     timezone: req.body.timezone,
     spacingSeconds: parseInt(req.body.spacingSeconds) || 10,
     broadcastEnabled: req.body.broadcastEnabled === 'true',
-    cleanupThreshold: isNaN(threshold) ? 1 : threshold
+    cleanupThreshold: isNaN(threshold) ? 0 : threshold
   });
   res.redirect(`/?page=${encodeURIComponent(pageId)}&schedule_saved=1`);
 });
@@ -2518,7 +2469,6 @@ app.get('/remove-photo', (req, res) => {
   res.redirect(`/?page=${encodeURIComponent(pageId)}`);
 });
 
-// Set the active photo by clicking ★ Set Active under a photo
 app.get('/set-active-photo', (req, res) => {
   const pageId = req.query.page;
   const page = getPage(pageId);
@@ -2531,55 +2481,46 @@ app.get('/set-active-photo', (req, res) => {
 });
 
 // ============================================
-// SHARED LIBRARY MANAGEMENT (from main dashboard)
+// SHARED LIBRARY
 // ============================================
-// Add one or more photo URLs to the shared library
 app.post('/library-add-photo', (req, res) => {
   const lib = loadLibrary();
   const raw = req.body.photoUrls || req.body.photoUrl || '';
   const urls = raw.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
   let added = 0;
-  urls.forEach(u => {
-    if (!lib.photos.includes(u)) { lib.photos.push(u); added++; }
-  });
+  urls.forEach(u => { if (!lib.photos.includes(u)) { lib.photos.push(u); added++; } });
   saveLibrary(lib);
   res.redirect(`/?page=all&lib_msg=${encodeURIComponent('Added ' + added + ' photo(s) to shared library')}`);
 });
 
-// Remove a photo from the shared library
 app.get('/library-remove-photo', (req, res) => {
   const lib = loadLibrary();
   const i = parseInt(req.query.index);
   if (i >= 0 && i < lib.photos.length) lib.photos.splice(i, 1);
   saveLibrary(lib);
-  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Photo removed from shared library'));
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Photo removed'));
 });
 
-// Add one or more redirect URLs to a specific SET
 app.post('/library-add-redirect', (req, res) => {
   const lib = loadLibrary();
   const setName = req.body.setName && lib.redirectSets[req.body.setName] ? req.body.setName : DEFAULT_SET;
   const raw = req.body.redirectUrls || req.body.redirectUrl || '';
   const urls = raw.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
   let added = 0;
-  urls.forEach(u => {
-    if (!lib.redirectSets[setName].includes(u)) { lib.redirectSets[setName].push(u); added++; }
-  });
+  urls.forEach(u => { if (!lib.redirectSets[setName].includes(u)) { lib.redirectSets[setName].push(u); added++; } });
   saveLibrary(lib);
-  res.redirect(`/?page=all&lib_msg=${encodeURIComponent('Added ' + added + ' URL(s) to "' + setName + '" set')}`);
+  res.redirect(`/?page=all&lib_msg=${encodeURIComponent('Added ' + added + ' URL(s) to "' + setName + '"')}`);
 });
 
-// Remove a redirect from a specific SET
 app.get('/library-remove-redirect', (req, res) => {
   const lib = loadLibrary();
   const setName = req.query.set && lib.redirectSets[req.query.set] ? req.query.set : DEFAULT_SET;
   const i = parseInt(req.query.index);
   if (i >= 0 && i < lib.redirectSets[setName].length) lib.redirectSets[setName].splice(i, 1);
   saveLibrary(lib);
-  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('URL removed from "' + setName + '" set'));
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('URL removed from "' + setName + '"'));
 });
 
-// Assign a page to a redirect SET
 app.post('/set-page-redirect-set', (req, res) => {
   const pageId = req.query.page;
   const page = getPage(pageId);
@@ -2593,7 +2534,7 @@ app.post('/set-page-redirect-set', (req, res) => {
 });
 
 // ============================================
-// CARD TEMPLATES (create/edit/delete on the Templates page)
+// CARD TEMPLATES
 // ============================================
 app.get('/backup', (req, res) => {
   const out = { exportedAt: new Date().toISOString(), dataDir: DATA_DIR, files: {} };
@@ -2613,12 +2554,11 @@ app.post('/restore-backup', (req, res) => {
   const body = req.body || {};
   const files = (body.files && typeof body.files === 'object') ? body.files : null;
   if (!files || typeof files !== 'object' || Array.isArray(files)) {
-    return res.json({ ok: false, error: 'This does not look like a backup file (no "files" section).' });
+    return res.json({ ok: false, error: 'This does not look like a backup file.' });
   }
   const safe = n => /^[\w.\-]+\.json$/.test(n) && n !== 'package.json' && n !== 'package-lock.json' && !/^prerestore-/.test(n);
   const names = Object.keys(files).filter(safe);
-  if (!names.length) return res.json({ ok: false, error: 'No restorable data found in this file.' });
-  // Safety: snapshot CURRENT data before overwriting, so nothing is lost
+  if (!names.length) return res.json({ ok: false, error: 'No restorable data found.' });
   try {
     const snap = { exportedAt: new Date().toISOString(), files: {} };
     fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json') && safe(f)).forEach(f => {
@@ -2641,7 +2581,7 @@ app.post('/restore-backup', (req, res) => {
 
 app.post('/upload-image', async (req, res) => {
   const clientId = process.env.IMGUR_CLIENT_ID;
-  if (!clientId) return res.status(400).json({ error: 'IMGUR_CLIENT_ID is not set. Add it in Railway -> Variables.' });
+  if (!clientId) return res.status(400).json({ error: 'IMGUR_CLIENT_ID is not set.' });
   const b64 = (req.body.image || '').replace(/^data:image\/\w+;base64,/, '');
   if (!b64) return res.status(400).json({ error: 'No image provided' });
   try {
@@ -2652,7 +2592,7 @@ app.post('/upload-image', async (req, res) => {
     });
     const d = await r.json();
     if (d && d.success && d.data && d.data.link) return res.json({ url: d.data.link });
-    const msg = (d && d.data && d.data.error) ? (typeof d.data.error === 'string' ? d.data.error : 'Imgur rejected the upload') : 'Imgur upload failed';
+    const msg = (d && d.data && d.data.error) ? (typeof d.data.error === 'string' ? d.data.error : 'Imgur rejected') : 'Imgur upload failed';
     return res.status(502).json({ error: msg });
   } catch (e) {
     return res.status(502).json({ error: 'Upload error: ' + e.message });
@@ -2663,9 +2603,7 @@ app.post('/template-add', (req, res) => {
   const lib = loadLibrary();
   const b = req.body;
   const photos = parsePhotos(b.photos, b.photo);
-  if (!photos.length) {
-    return res.redirect('/?page=templates&error=' + encodeURIComponent('At least one photo is required'));
-  }
+  if (!photos.length) return res.redirect('/?page=templates&error=' + encodeURIComponent('At least one photo is required'));
   const setName = (b.set && lib.redirectSets[b.set]) ? b.set : DEFAULT_SET;
   const tmpl = {
     id: 't' + Date.now() + Math.floor(Math.random() * 1000),
@@ -2689,6 +2627,8 @@ app.post('/template-edit', (req, res) => {
   const b = req.body;
   const t = (lib.cardTemplates || []).find(x => x.id === b.id);
   if (!t) return res.redirect('/?page=templates&error=Template+not+found');
+
+  // Update this card
   if (b.title !== undefined) t.title = b.title.trim();
   if (b.subtitle !== undefined) t.subtitle = b.subtitle.trim();
   if (b.photos !== undefined) {
@@ -2700,8 +2640,38 @@ app.post('/template-edit', (req, res) => {
   if (b.redirect !== undefined) t.redirect = normalizeUrl(b.redirect);
   if (b.buttonText !== undefined) t.buttonText = b.buttonText.trim() || 'My Photos 📞';
   if (b.set && lib.redirectSets[b.set]) t.set = b.set;
+
+  // Sync shared fields to linked partner (if any)
+  let synced = false;
+  const linkedId = b.linkedId || t.linkedId;
+  if (linkedId) {
+    const partner = (lib.cardTemplates || []).find(x => x.id === linkedId);
+    if (partner) {
+      // Sync: photos, title, subtitle, buttonText — NOT redirect (each keeps its own)
+      partner.title = t.title;
+      partner.subtitle = t.subtitle;
+      partner.photos = t.photos ? [...t.photos] : [];
+      partner.photo = t.photo;
+      partner.buttonText = t.buttonText;
+      // Also update partner's redirect if the form sent a linkedRedirect value
+      if (b.linkedRedirect && b.linkedRedirect.trim()) {
+        partner.redirect = normalizeUrl(b.linkedRedirect.trim());
+      }
+      // Ensure both sides have linkedId pointing at each other
+      partner.linkedId = t.id;
+      t.linkedId = partner.id;
+      synced = true;
+    } else {
+      // Partner missing — clear the dead link
+      t.linkedId = undefined;
+    }
+  }
+
   saveLibrary(lib);
-  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Template updated'));
+  const msg = synced
+    ? 'Template updated + synced to linked partner ✅'
+    : 'Template updated (no linked partner to sync)';
+  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent(msg));
 });
 
 app.get('/template-duplicate', (req, res) => {
@@ -2710,18 +2680,22 @@ app.get('/template-duplicate', (req, res) => {
   if (!src) return res.redirect('/?page=templates&error=Template+not+found');
   const toSet = (req.query.to && lib.redirectSets[req.query.to]) ? req.query.to : (src.set === SECOND_SET ? DEFAULT_SET : SECOND_SET);
   const url = normalizeUrl(req.query.url || '');
-  if (!url) return res.redirect('/?page=templates&error=' + encodeURIComponent('A gallery URL is required to duplicate'));
+  if (!url) return res.redirect('/?page=templates&error=' + encodeURIComponent('A gallery URL is required'));
   const photos = (Array.isArray(src.photos) && src.photos.length) ? src.photos.slice() : (src.photo ? [src.photo] : []);
+  const dupId = 't' + Date.now() + Math.floor(Math.random() * 1000);
   const dup = {
-    id: 't' + Date.now() + Math.floor(Math.random() * 1000),
+    id: dupId,
     title: src.title, subtitle: src.subtitle,
     photos, photo: photos[0] || '',
-    redirect: url, buttonText: src.buttonText, active: true, set: toSet
+    redirect: url, buttonText: src.buttonText, active: true, set: toSet,
+    linkedId: src.id  // link dup → src
   };
+  // Also link src → dup (bidirectional)
+  src.linkedId = dupId;
   lib.cardTemplates = lib.cardTemplates || [];
   lib.cardTemplates.unshift(dup);
   saveLibrary(lib);
-  res.redirect('/?page=templates&new=' + dup.id + '&lib_msg=' + encodeURIComponent('Card duplicated to ' + toSet));
+  res.redirect('/?page=templates&new=' + dup.id + '&lib_msg=' + encodeURIComponent('Card duplicated to ' + toSet + ' and linked — edits will sync between them'));
 });
 
 app.post('/templates-bulk-active', (req, res) => {
@@ -2734,33 +2708,57 @@ app.post('/templates-bulk-active', (req, res) => {
   res.json({ ok: true, updated: n });
 });
 
-app.get('/template-toggle', (req, res) => {
+// Manually link two existing cards (bidirectional)
+app.post('/template-link', (req, res) => {
+  const lib = loadLibrary();
+  const { id, partnerId } = req.body;
+  const t = (lib.cardTemplates || []).find(x => x.id === id);
+  const partner = (lib.cardTemplates || []).find(x => x.id === partnerId);
+  if (!t) return res.json({ ok: false, error: 'Card not found: ' + id });
+  if (!partner) return res.json({ ok: false, error: 'Partner card not found: ' + partnerId + ' — check the ID is correct' });
+  if (t.set === partner.set) return res.json({ ok: false, error: 'Both cards are in the same set (' + t.set + ') — link one Scrollgallery card to one TheViralBox card' });
+  // Clear any old links first
+  if (t.linkedId) { const old = lib.cardTemplates.find(x => x.id === t.linkedId); if (old) old.linkedId = undefined; }
+  if (partner.linkedId) { const old = lib.cardTemplates.find(x => x.id === partner.linkedId); if (old) old.linkedId = undefined; }
+  // Set new bidirectional link
+  t.linkedId = partner.id;
+  partner.linkedId = t.id;
+  saveLibrary(lib);
+  res.json({ ok: true });
+});
+
+// Unlink a card pair (removes linkedId from both)
+app.get('/template-unlink', (req, res) => {
   const lib = loadLibrary();
   const t = (lib.cardTemplates || []).find(x => x.id === req.query.id);
-  if (t) { t.active = (t.active === false); saveLibrary(lib); }
-  const msg = t ? (t.active ? 'Card activated' : 'Card paused') : 'Template not found';
-  res.redirect('/?page=templates&new=' + (req.query.id || '') + '&lib_msg=' + encodeURIComponent(msg));
+  if (t) {
+    if (t.linkedId) {
+      const partner = lib.cardTemplates.find(x => x.id === t.linkedId);
+      if (partner) partner.linkedId = undefined;
+    }
+    t.linkedId = undefined;
+    saveLibrary(lib);
+  }
+  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Cards unlinked — each now edits independently'));
 });
 
 app.get('/template-delete', (req, res) => {
   const lib = loadLibrary();
-  const id = req.query.id;
-  lib.cardTemplates = (lib.cardTemplates || []).filter(t => t.id !== id);
+  lib.cardTemplates = (lib.cardTemplates || []).filter(t => t.id !== req.query.id);
   saveLibrary(lib);
   res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Template deleted'));
 });
 
 // ============================================
-// CONTENT MODE (Classic vs Templates)
+// CONTENT MODE
 // ============================================
-// Set the GLOBAL default content mode
 app.post('/master-redirect-on', (req, res) => {
   const s = loadSettings();
   const url = normalizeUrl(req.body.url || '');
-  if (!url) return res.redirect('/?page=templates&error=' + encodeURIComponent('Enter a URL before turning the override on'));
+  if (!url) return res.redirect('/?page=templates&error=' + encodeURIComponent('Enter a URL first'));
   s.masterRedirect = { enabled: true, url };
   saveSettings(s);
-  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Master redirect ON — every card now points to ' + url));
+  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Master redirect ON → ' + url));
 });
 
 app.post('/master-redirect-off', (req, res) => {
@@ -2768,7 +2766,7 @@ app.post('/master-redirect-off', (req, res) => {
   const url = (s.masterRedirect && s.masterRedirect.url) || '';
   s.masterRedirect = { enabled: false, url };
   saveSettings(s);
-  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Master redirect OFF — cards use their own URLs again'));
+  res.redirect('/?page=templates&lib_msg=' + encodeURIComponent('Master redirect OFF'));
 });
 
 app.post('/set-global-mode', (req, res) => {
@@ -2776,25 +2774,20 @@ app.post('/set-global-mode', (req, res) => {
   s.contentMode = req.body.mode === 'templates' ? 'templates' : 'classic';
   saveSettings(s);
   const back = req.body.returnTo === 'templates' ? '/?page=templates' : '/?page=all';
-  res.redirect(back + '&lib_msg=' + encodeURIComponent('Global content mode set to ' + s.contentMode.toUpperCase()));
+  res.redirect(back + '&lib_msg=' + encodeURIComponent('Global mode set to ' + s.contentMode.toUpperCase()));
 });
 
-// Set a PAGE's content mode (classic / templates / global)
 app.post('/set-page-mode', (req, res) => {
   const pageId = req.query.page;
   const page = getPage(pageId);
   if (!page) return res.redirect('/?error=Unknown+page');
   const m = req.body.mode;
-  if (m === 'classic' || m === 'templates') {
-    updatePage(pageId, { contentMode: m });
-  } else {
-    updatePage(pageId, { contentMode: 'global' }); // follow global default
-  }
+  updatePage(pageId, { contentMode: (m === 'classic' || m === 'templates') ? m : 'global' });
   res.redirect(req.body.returnTo === 'page' ? `/?page=${encodeURIComponent(pageId)}&saved=1` : '/?saved=1');
 });
 
 // ============================================
-// SET ACTIVE FROM SHARED LIBRARY (per page)
+// SET ACTIVE FROM LIBRARY
 // ============================================
 app.get('/set-active-from-library', (req, res) => {
   const pageId = req.query.page;
@@ -2802,13 +2795,11 @@ app.get('/set-active-from-library', (req, res) => {
   if (!page) return res.redirect('/?error=Unknown+page');
   const lib = loadLibrary();
   const updates = {};
-
   if (req.query.photoIndex !== undefined) {
     const i = parseInt(req.query.photoIndex);
     if (i >= 0 && i < lib.photos.length) {
       const photo = lib.photos[i];
-      updates.currentPhoto = photo;
-      updates.lastPhoto = photo;
+      updates.currentPhoto = photo; updates.lastPhoto = photo;
       const photos = Array.isArray(page.photos) ? [...page.photos] : [];
       if (!photos.includes(photo)) photos.unshift(photo);
       updates.photos = photos;
@@ -2818,10 +2809,7 @@ app.get('/set-active-from-library', (req, res) => {
     const setName = pageSet(page, lib);
     const pool = lib.redirectSets[setName] || [];
     const i = parseInt(req.query.redirectIndex);
-    if (i >= 0 && i < pool.length) {
-      updates.whatsapp = pool[i];
-      updates.lastRedirect = pool[i];
-    }
+    if (i >= 0 && i < pool.length) { updates.whatsapp = pool[i]; updates.lastRedirect = pool[i]; }
   }
   if (Object.keys(updates).length) updatePage(pageId, updates);
   res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
@@ -2830,20 +2818,16 @@ app.get('/set-active-from-library', (req, res) => {
 // ============================================
 // RANDOMIZE
 // ============================================
-// Randomize ONE page (photo + redirect, or just one via ?only=photo|redirect)
 app.post('/randomize-page', (req, res) => {
   const pageId = req.query.page;
   const page = getPage(pageId);
   if (!page) return res.redirect('/?error=Unknown+page');
   const only = req.query.only;
-  const opts = only === 'photo' ? { photo: true, redirect: false }
-            : only === 'redirect' ? { photo: false, redirect: true }
-            : {};
+  const opts = only === 'photo' ? { photo: true, redirect: false } : only === 'redirect' ? { photo: false, redirect: true } : {};
   randomizePage(page, opts);
   res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
 });
 
-// Randomize ONE page then immediately broadcast
 app.post('/randomize-and-send', (req, res) => {
   const pageId = req.query.page;
   let page = getPage(pageId);
@@ -2852,44 +2836,35 @@ app.post('/randomize-and-send', (req, res) => {
   const count = broadcastToPage(page, {});
   res.send(`${renderHead('Randomize + Send')}<div class="container"><div class="card">
     <h2>🎲 Randomized & Broadcasting — ${esc(page.label)}</h2>
-    <p>New random photo + redirect selected, sending to <strong>${count} fans</strong>.</p>
+    <p>Sending to <strong>${count} fans</strong>.</p>
     <div style="background:#f0f6ff;border:1px solid #b5d4f4;border-radius:8px;padding:12px;margin:14px 0;font-size:13px;">
-      <div>📸 Photo: <code style="font-size:11px;">${esc(page.currentPhoto || '')}</code></div>
-      <div style="margin-top:6px;">🔗 Redirect: <code style="font-size:11px;">${esc(page.whatsapp || '')}</code></div>
+      <div>📸 Photo: <code>${esc(page.currentPhoto || '')}</code></div>
+      <div style="margin-top:6px;">🔗 Redirect: <code>${esc(page.whatsapp || '')}</code></div>
     </div>
-    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back to Dashboard</a>
+    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
   </div></div></body></html>`);
 });
 
-// Randomize ALL pages (each gets a fresh, different-from-previous combo)
 app.post('/randomize-all', (req, res) => {
   const pages = loadPages();
-  pages.forEach(p => {
-    const fresh = getPage(p.pageId);
-    if (fresh) randomizePage(fresh, {});
-  });
-  console.log(`🎲 Randomized all ${pages.length} pages`);
-  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('All ' + pages.length + ' pages randomized with fresh photo + redirect'));
+  pages.forEach(p => { const fresh = getPage(p.pageId); if (fresh) randomizePage(fresh, {}); });
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('All ' + pages.length + ' pages randomized'));
 });
 
 // ============================================
-// RESET STATS (keeps fans, zeroes clicks/messages/history)
+// RESET STATS
 // ============================================
-// Reset ONE page's stats
 app.post('/reset-stats', (req, res) => {
   const pageId = req.query.page;
   if (!getPage(pageId)) return res.redirect('/?error=Unknown+page');
   resetStats(pageId);
-  console.log(`📊 Stats reset for page ${pageId} (fans kept)`);
   res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
 });
 
-// Reset ALL pages' stats
 app.post('/reset-stats-all', (req, res) => {
   const pages = loadPages();
   pages.forEach(p => resetStats(p.pageId));
-  console.log(`📊 Stats reset for ALL ${pages.length} pages (fans kept)`);
-  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('All stats reset to 0 on ' + pages.length + ' pages (fan counts kept)'));
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('All stats reset on ' + pages.length + ' pages'));
 });
 
 // ============================================
@@ -2920,11 +2895,8 @@ app.post('/bulk-add-fans', (req, res) => {
   const added = combined.length - before;
   res.send(`${renderHead('Bulk Import')}<div class="container"><div class="card">
     <h2>✅ Bulk Import Done</h2>
-    <p>PSIDs found in input: <strong>${psids.length}</strong></p>
-    <p>New fans added: <strong>${added}</strong></p>
-    <p>Duplicates skipped: <strong>${psids.length - added}</strong></p>
-    <p>Total fans now: <strong>${combined.length}</strong></p>
-    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back to Dashboard</a>
+    <p>Found: <strong>${psids.length}</strong> · Added: <strong>${added}</strong> · Duplicates skipped: <strong>${psids.length - added}</strong> · Total fans: <strong>${combined.length}</strong></p>
+    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
   </div></div></body></html>`);
 });
 
@@ -2975,8 +2947,7 @@ app.get('/import-contacts', async (req, res) => {
     const _imp = await importContactsForPage(pageId);
     res.send(`${renderHead('Import')}<div class="container"><div class="card">
       <h2>✅ Import Complete for ${esc(page.label)}</h2>
-      <p>Found: <strong>${_imp.found}</strong></p>
-      <p>Total fans now: <strong>${_imp.total}</strong></p>
+      <p>Found: <strong>${_imp.found}</strong> · Total fans: <strong>${_imp.total}</strong></p>
       <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
     </div></div></body></html>`);
   } catch (e) {
@@ -2990,8 +2961,6 @@ app.get('/import-contacts', async (req, res) => {
 // ============================================
 // BROADCASTS
 // ============================================
-
-// Test send — send ONE card to a specific PSID for testing. Does not add to fans list.
 app.post('/test-send', async (req, res) => {
   const pageId = req.query.page;
   const page = getPage(pageId);
@@ -2999,8 +2968,7 @@ app.post('/test-send', async (req, res) => {
   const psid = (req.body.psid || '').trim();
   if (!/^\d{6,}$/.test(psid)) {
     return res.send(`${renderHead('Test Send')}<div class="container"><div class="card">
-      <h2>❌ Invalid PSID</h2>
-      <p>PSID must be at least 6 digits, no spaces or letters.</p>
+      <h2>❌ Invalid PSID</h2><p>PSID must be at least 6 digits.</p>
       <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
     </div></div></body></html>`);
   }
@@ -3008,33 +2976,16 @@ app.post('/test-send', async (req, res) => {
   if (result && result.error) {
     const errCode = result.error.code || '?';
     const errMsg = result.error.message || 'Unknown error';
-    let hint = '';
-    if (errCode === 10 || errMsg.includes('outside of allowed window')) {
-      hint = '<p style="color:#92400e;font-size:13px;">💡 This PSID is outside the 24-hour messaging window. The fan needs to message your page first (any message in the last 24 hours).</p>';
-    } else if (errCode === 100 || errMsg.includes('No matching user')) {
-      hint = '<p style="color:#92400e;font-size:13px;">💡 PSID does not exist or has never interacted with this page. PSIDs are page-specific — a PSID from one page won\'t work for another page.</p>';
-    } else if (errCode === 190 || errMsg.includes('access token')) {
-      hint = '<p style="color:#92400e;font-size:13px;">💡 Page Access Token issue. Regenerate it on Facebook Developer and update this page in messagebot.</p>';
-    }
     return res.send(`${renderHead('Test Send Failed')}<div class="container"><div class="card" style="border:1px solid #fca5a5;background:#fef2f2;">
       <h2 style="color:#991b1b;">❌ Test Send Failed</h2>
-      <p><strong>Page:</strong> ${esc(page.label)}</p>
-      <p><strong>PSID:</strong> ${esc(psid)}</p>
-      <p><strong>Facebook error code:</strong> ${esc(String(errCode))}</p>
-      <p><strong>Facebook error message:</strong> ${esc(errMsg)}</p>
-      ${hint}
-      <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back to Dashboard</a>
+      <p><strong>Code:</strong> ${esc(String(errCode))} · <strong>Message:</strong> ${esc(errMsg)}</p>
+      <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
     </div></div></body></html>`);
   }
   res.send(`${renderHead('Test Send')}<div class="container"><div class="card" style="border:1px solid #86efac;background:#f0fdf4;">
     <h2 style="color:#166534;">✅ Test Card Sent!</h2>
-    <p><strong>Page:</strong> ${esc(page.label)}</p>
-    <p><strong>PSID:</strong> ${esc(psid)}</p>
-    <p><strong>Title:</strong> ${esc(page.title)}</p>
-    <p><strong>Subtitle:</strong> ${esc(page.subtitle)}</p>
-    <p><strong>Photo:</strong> <a href="${esc(page.currentPhoto)}" target="_blank">${esc(page.currentPhoto)}</a></p>
-    <p style="color:#166534;font-size:13px;">👉 Check Messenger now — should arrive in a few seconds. If it doesn't, check the Failed counter on dashboard.</p>
-    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back to Dashboard</a>
+    <p>PSID: ${esc(psid)} · Photo: <a href="${esc(page.currentPhoto)}" target="_blank">${esc(page.currentPhoto)}</a></p>
+    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
   </div></div></body></html>`);
 });
 
@@ -3045,9 +2996,8 @@ app.get('/send-now', (req, res) => {
   const count = broadcastToPage(page, { subtitle: getRotatingSubtitle() });
   res.send(`${renderHead('Broadcast')}<div class="container"><div class="card">
     <h2>📣 Broadcast Started for ${esc(page.label)}</h2>
-    <p>Sending to <strong>${count} fans</strong>, spaced ${page.spacingSeconds || 10}s apart.</p>
-    <p>Estimated total: <strong>~${Math.ceil(count * (page.spacingSeconds || 10) / 60)} min</strong></p>
-    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back to Dashboard</a>
+    <p>Sending to <strong>${count} fans</strong>, spaced ${page.spacingSeconds || 10}s apart. Est. ~${Math.ceil(count * (page.spacingSeconds || 10) / 60)} min.</p>
+    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
   </div></div></body></html>`);
 });
 
@@ -3055,8 +3005,7 @@ app.post('/send-custom', (req, res) => {
   const pageId = req.query.page;
   const page = getPage(pageId);
   if (!page) return res.redirect('/?error=Unknown+page');
-  const photo = req.body.photo || undefined;
-  const count = broadcastToPage(page, { photo });
+  const count = broadcastToPage(page, { photo: req.body.photo || undefined });
   res.send(`${renderHead('Broadcast')}<div class="container"><div class="card">
     <h2>🚀 Custom Broadcast Started for ${esc(page.label)}</h2>
     <p>Sending to <strong>${count} fans</strong>.</p>
@@ -3064,9 +3013,6 @@ app.post('/send-custom', (req, res) => {
   </div></div></body></html>`);
 });
 
-// ============================================
-// TEMPLATE 2: PLAIN TEXT — save + broadcast
-// ============================================
 app.post('/save-text-template', (req, res) => {
   const pageId = req.query.page;
   if (!getPage(pageId)) return res.redirect('/?error=Unknown+page');
@@ -3079,23 +3025,19 @@ app.post('/send-text-now', (req, res) => {
   const page = getPage(pageId);
   if (!page) return res.redirect('/?error=Unknown+page');
   const text = (page.textTemplate || '').trim();
-  if (!text) {
-    return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=${encodeURIComponent('No text template saved. Type a message and click Save Text first.')}`);
-  }
+  if (!text) return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=${encodeURIComponent('No text template saved.')}`);
   const count = broadcastTextToPage(page, text);
   res.send(`${renderHead('Text Broadcast')}<div class="container"><div class="card">
     <h2>💬 Text Broadcast Started for ${esc(page.label)}</h2>
-    <p>Sending plain text to <strong>${count} fans</strong>, spaced ${page.spacingSeconds || 10}s apart.</p>
-    <p>Estimated total: <strong>~${Math.ceil(count * (page.spacingSeconds || 10) / 60)} min</strong></p>
+    <p>Sending to <strong>${count} fans</strong>.</p>
     <div style="background:#fef3e7;border:1px solid #fde68a;border-radius:8px;padding:12px;margin:14px 0;">
-      <div style="font-size:11px;color:#92400e;margin-bottom:4px;">Message being sent:</div>
-      <div style="font-size:13px;color:#1a1d2e;white-space:pre-wrap;">${esc(text)}</div>
+      <div style="font-size:13px;white-space:pre-wrap;">${esc(text)}</div>
     </div>
-    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back to Dashboard</a>
+    <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
   </div></div></body></html>`);
 });
 
-const scheduledBroadcasts = {}; // pageId → timeout handle
+const scheduledBroadcasts = {};
 app.post('/schedule-once', (req, res) => {
   const pageId = req.query.page;
   const page = getPage(pageId);
@@ -3122,11 +3064,9 @@ app.post('/schedule-once', (req, res) => {
 });
 
 // ============================================
-// MASTER CRON — runs every minute, checks all pages
-// Fires daily broadcast for any page whose time matches now (in that page's timezone)
-// Uses lastBroadcastDate guard to prevent double-firing in a single day
+// MASTER CRON
 // ============================================
-const broadcastGuard = {}; // pageId → 'YYYY-MM-DD' of last fire
+const broadcastGuard = {};
 cron.schedule('* * * * *', () => {
   const pages = loadPages();
   const now = new Date();
@@ -3153,14 +3093,12 @@ cron.schedule('* * * * *', () => {
     }
     if (curH === hh && curM === mm && broadcastGuard[page.pageId] !== curDate) {
       broadcastGuard[page.pageId] = curDate;
-      console.log(`⏰ [${page.label}] Daily broadcast triggered at ${curH}:${curM} ${page.timezone}`);
-      // Auto-randomize photo + redirect from shared library (different from previous day)
+      console.log(`⏰ [${page.label}] Daily broadcast at ${curH}:${curM} ${page.timezone}`);
       let fresh = page;
       try {
         const lib = loadLibrary();
         if (lib.photos.length || Object.values(lib.redirectSets).some(a => a.length)) {
           fresh = randomizePage(page, {});
-          console.log(`🎲 [${page.label}] Auto-randomized → photo=${(fresh.currentPhoto||'').split('/').pop()} redirect=${(fresh.whatsapp||'').replace(/^https?:\/\//,'')}`);
         }
       } catch (e) {
         console.error(`[${page.label}] Auto-randomize failed:`, e.message);
@@ -3171,19 +3109,13 @@ cron.schedule('* * * * *', () => {
 });
 
 // ============================================
-// HEALTH CHECK (public — for Railway)
-// ============================================
-// Note: this is BEHIND the auth wall as written above. Most hosts don't need it.
-// If Railway insists on an unauthenticated /health, move this block above the auth wall.
-
-// ============================================
 // START
 // ============================================
 app.listen(PORT, () => {
   console.log(`✅ messagebot running on port ${PORT}`);
-  console.log(`🌐 Public URL: ${PUBLIC_URL || '(not set yet — wait for Railway to assign)'}`);
-  console.log(`🔒 Admin login: ${ADMIN_USER} / ${ADMIN_PASS === 'changeme' ? '⚠️  CHANGE DEFAULT PASSWORD!' : '(set)'}`);
+  console.log(`🌐 Public URL: ${PUBLIC_URL || '(not set yet)'}`);
+  console.log(`🔒 Admin: ${ADMIN_USER} / ${ADMIN_PASS === 'changeme' ? '⚠️  CHANGE DEFAULT PASSWORD!' : '(set)'}`);
   const pages = loadPages();
-  console.log(`📋 Loaded ${pages.length} page(s):`);
-  pages.forEach(p => console.log(`   - ${p.label} (${p.pageId}) — broadcast ${p.broadcastEnabled ? 'ON' : 'OFF'} at ${p.broadcastTime} ${p.timezone}`));
+  console.log(`📋 Loaded ${pages.length} page(s)`);
+  pages.forEach(p => console.log(`   - ${p.label} (${p.pageId}) — broadcast ${p.broadcastEnabled ? 'ON' : 'OFF'} at ${p.broadcastTime} ${p.timezone} · group: ${p.group || 'none'}`));
 });
