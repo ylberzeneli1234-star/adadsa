@@ -1433,17 +1433,16 @@ function renderTemplateManager(req) {
         document.getElementById('f-photos').value = JSON.stringify(formPhotos);
         var grid = document.getElementById('f-photo-grid');
         grid.innerHTML = formPhotos.map(function(u, i){
-          var shortUrl = u.replace(/^https?:\/\//, '');
           var uid = 'pgurl_' + i;
           return '<div style="border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;background:#fff;">'
             + '<div style="position:relative;aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;">'
             + '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;" onerror="imgFail(this)"/>'
-            + '<button type="button" aria-label="Remove" onclick="removePhotoFromForm('+i+')" style="position:absolute;top:3px;right:3px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;line-height:1;cursor:pointer;">\u00d7</button>'
+            + '<button type="button" class="pg-remove-btn" data-idx="'+i+'" style="position:absolute;top:3px;right:3px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;line-height:1;cursor:pointer;">\u00d7</button>'
             + '</div>'
             + '<div style="padding:6px;background:#f8fafc;border-top:1px solid #e2e8f0;">'
             + '<div style="font-size:10px;color:#6b7280;margin-bottom:4px;font-weight:600;">📎 Photo ' + (i+1) + ' URL</div>'
-            + '<input id="'+uid+'" type="text" value="'+escAttr(u)+'" readonly onclick="this.select();" style="width:100%;font-size:10px;font-family:monospace;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#1e40af;cursor:pointer;word-break:break-all;" title="Click to select full URL"/>'
-            + '<button type="button" onclick="(function(b){var el=document.getElementById(\''+uid+'\');el.select();document.execCommand(\'copy\');var t=b.textContent;b.textContent=\'✓ Copied!\';b.style.background=\'#16a34a\';setTimeout(function(){b.textContent=\'📋 Copy URL\';b.style.background=\'#6b7280\';},1400);})(this)" style="width:100%;margin-top:4px;background:#6b7280;color:#fff;border:none;border-radius:4px;font-size:10px;font-weight:600;padding:4px;cursor:pointer;">📋 Copy URL</button>'
+            + '<input id="'+uid+'" type="text" value="'+escAttr(u)+'" readonly style="width:100%;font-size:10px;font-family:monospace;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#1e40af;cursor:pointer;" title="Click to select full URL" onclick="this.select();"/>'
+            + '<button type="button" class="pg-copy-btn" data-uid="'+uid+'" style="width:100%;margin-top:4px;background:#6b7280;color:#fff;border:none;border-radius:4px;font-size:10px;font-weight:600;padding:4px;cursor:pointer;">📋 Copy URL</button>'
             + '</div>'
             + '</div>';
         }).join('') || '<span style="color:#94a3b8;font-size:12px;">No photos added yet.</span>';
@@ -1453,17 +1452,17 @@ function renderTemplateManager(req) {
       function validateTmplForm() { if (!formPhotos.length) { alert('Add at least one photo.'); return false; } return true; }
       function dupTmpl(id, toSet) {
         var t = getTmpl(id); if (!t) return;
-        var url = prompt('Enter the ' + toSet + ' gallery URL for the duplicate:\n\n(The two cards will be LINKED — editing one syncs photos/title/subtitle/button to the other)', '');
+        var url = prompt('Enter the ' + toSet + ' gallery URL for the duplicate. The two cards will be LINKED — editing one syncs photos/title/subtitle/button to the other.', '');
         if (url === null) return; url = (url || '').trim();
         if (!url) { alert('A URL is required.'); return; }
         window.location.href = '/template-duplicate?id=' + encodeURIComponent(id) + '&to=' + encodeURIComponent(toSet) + '&url=' + encodeURIComponent(url);
       }
       function manualLink(id, otherSet) {
         var t = getTmpl(id); if (!t) return;
-        var pid = prompt('Enter the ID of the ' + otherSet + ' card to link to.\n\n(You can find the ID by hovering/inspecting a card, or ask: it starts with "t" e.g. t1234567890)\n\nOnce linked, editing either card will sync photos, title, subtitle and button to the other — each keeps its own redirect URL.', '');
+        var pid = prompt('Enter the ID of the ' + otherSet + ' card to link to (starts with t). Once linked, edits sync photos/title/subtitle/button to the other card.', '');
         if (pid === null) return; pid = (pid || '').trim();
         if (!pid) { alert('An ID is required.'); return; }
-        if (!confirm('Link "' + (t.title || id) + '" (' + (t.set || 'Scrollgallery') + ') to card ID "' + pid + '" (' + otherSet + ')?\n\nEdits to either card will sync shared fields to the other.')) return;
+        if (!confirm('Link ' + (t.title || id) + ' to ' + pid + '? Edits will sync between them.')) return;
         fetch('/template-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, partnerId: pid }) })
           .then(function(r){ return r.json(); })
           .then(function(d){ if (d && d.ok) { location.href = '/?page=templates&lib_msg=' + encodeURIComponent('Cards linked! Edits will now sync between them.'); } else { alert('Link failed: ' + ((d && d.error) || 'unknown error')); } })
@@ -1517,7 +1516,7 @@ function renderTemplateManager(req) {
         if (t.linkedId) {
           var partner = getTmpl(t.linkedId);
           lb.style.display = 'block';
-          lbl.textContent = '(this card\'s own URL — stays separate from partner)';
+          lbl.textContent = "(this card's own URL — stays separate from partner)";
           lrid.value = t.linkedId;
           lrurl.value = partner ? (partner.redirect || '') : '';
           lrurl.placeholder = partner ? 'Partner: ' + (partner.set || 'other set') + ' redirect URL' : 'Partner redirect URL';
@@ -1555,13 +1554,16 @@ function renderTemplateManager(req) {
       document.addEventListener('change', function(e){ if (e.target && e.target.classList && e.target.classList.contains('tmpl-sel')) updateSelCount(); });
       // Button click delegation — avoids ALL quoting issues with onclick attributes
       document.addEventListener('click', function(e) {
-        var btn = e.target.closest('.tmpl-edit-btn, .tmpl-dup-btn, .tmpl-link-btn');
+        var btn = e.target.closest('.tmpl-edit-btn, .tmpl-dup-btn, .tmpl-link-btn, .pg-copy-btn, .pg-remove-btn');
         if (!btn) return;
-        var id = btn.getAttribute('data-id');
-        var otherSet = btn.getAttribute('data-otherset');
-        if (btn.classList.contains('tmpl-edit-btn')) { editTmpl(id); }
-        else if (btn.classList.contains('tmpl-dup-btn')) { dupTmpl(id, otherSet); }
-        else if (btn.classList.contains('tmpl-link-btn')) { manualLink(id, otherSet); }
+        if (btn.classList.contains('tmpl-edit-btn')) { editTmpl(btn.getAttribute('data-id')); }
+        else if (btn.classList.contains('tmpl-dup-btn')) { dupTmpl(btn.getAttribute('data-id'), btn.getAttribute('data-otherset')); }
+        else if (btn.classList.contains('tmpl-link-btn')) { manualLink(btn.getAttribute('data-id'), btn.getAttribute('data-otherset')); }
+        else if (btn.classList.contains('pg-copy-btn')) {
+          var el = document.getElementById(btn.getAttribute('data-uid'));
+          if (el) { el.select(); document.execCommand('copy'); btn.textContent = '✓ Copied!'; btn.style.background = '#16a34a'; setTimeout(function(){ btn.textContent = '📋 Copy URL'; btn.style.background = '#6b7280'; }, 1400); }
+        }
+        else if (btn.classList.contains('pg-remove-btn')) { removePhotoFromForm(parseInt(btn.getAttribute('data-idx'))); }
       });
       // All template data in ONE safe block — avoids inline script tags per card breaking on special chars
       // getTmpl is lazy: reads the JSON element on first call (it's parsed by then since script runs after DOM)
