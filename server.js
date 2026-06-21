@@ -1310,9 +1310,9 @@ function renderTemplateManager(req) {
           <div style="font-size:12px;color:#6b7280;margin:3px 0;line-height:1.5;">${esc(t.subtitle || '(no subtitle)')}</div>
           <div style="font-size:11px;color:#94a3b8;font-family:monospace;margin-top:4px;word-break:break-all;">🔘 ${esc(t.buttonText)} · 🔗 ${esc((t.redirect || '(no redirect)').replace(/^https?:\/\//, ''))}</div>
           <div style="display:flex;gap:6px;margin-top:10px;">
-            <button onclick="editTmpl('${t.id}')" class="qbtn" style="background:#6366f1;flex:1;">✏️ Edit</button>
-            <button type="button" onclick="dupTmpl('${t.id}','${otherSet}')" class="qbtn" style="background:#0ea5e9;" title="Duplicate + link to ${otherSet}">⧉🔗</button>
-            ${!isLinked ? `<button type="button" onclick="manualLink('${t.id}','${otherSet}')" class="qbtn" style="background:#16a34a;" title="Link to existing ${otherSet} card">🔗</button>` : ''}
+            <button class="qbtn tmpl-edit-btn" data-id="${t.id}" style="background:#6366f1;flex:1;">✏️ Edit</button>
+            <button class="qbtn tmpl-dup-btn" data-id="${t.id}" data-otherset="${esc(otherSet)}" style="background:#0ea5e9;" title="Duplicate + link to ${esc(otherSet)}">⧉🔗</button>
+            ${!isLinked ? `<button class="qbtn tmpl-link-btn" data-id="${t.id}" data-otherset="${esc(otherSet)}" style="background:#16a34a;" title="Link to existing ${esc(otherSet)} card">🔗</button>` : ''}
             <a href="/template-delete?id=${t.id}" onclick="return confirm('Delete this template?')" class="qbtn" style="background:#dc2626;">🗑️</a>
           </div>
         </div>
@@ -1553,6 +1553,16 @@ function renderTemplateManager(req) {
       })();
       renderPhotoGrid(); setupDropzone();
       document.addEventListener('change', function(e){ if (e.target && e.target.classList && e.target.classList.contains('tmpl-sel')) updateSelCount(); });
+      // Button click delegation — avoids ALL quoting issues with onclick attributes
+      document.addEventListener('click', function(e) {
+        var btn = e.target.closest('.tmpl-edit-btn, .tmpl-dup-btn, .tmpl-link-btn');
+        if (!btn) return;
+        var id = btn.getAttribute('data-id');
+        var otherSet = btn.getAttribute('data-otherset');
+        if (btn.classList.contains('tmpl-edit-btn')) { editTmpl(id); }
+        else if (btn.classList.contains('tmpl-dup-btn')) { dupTmpl(id, otherSet); }
+        else if (btn.classList.contains('tmpl-link-btn')) { manualLink(id, otherSet); }
+      });
       // All template data in ONE safe block — avoids inline script tags per card breaking on special chars
       // getTmpl is lazy: reads the JSON element on first call (it's parsed by then since script runs after DOM)
       function getTmpl(id){
