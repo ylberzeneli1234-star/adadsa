@@ -942,67 +942,133 @@ function renderGroupManager(pages) {
   const groups = getAllGroups(pages);
   const unassigned = pages.filter(p => !p.group || !p.group.trim());
 
-  // Summary pills
   const pills = groups.map(g => {
     const count = pages.filter(p => p.group === g).length;
     const fans = pages.filter(p => p.group === g).reduce((acc, p) => acc + loadFans(p.pageId).length, 0);
     return `<div style="background:#ede9fe;border:1px solid #c4b5fd;border-radius:8px;padding:10px 14px;display:inline-flex;align-items:center;gap:10px;">
       <div>
         <div style="font-weight:700;color:#6d28d9;font-size:14px;">${esc(g)}</div>
-        <div style="font-size:11px;color:#7c3aed;">${count} pages · ${fans} fans</div>
+        <div style="font-size:11px;color:#7c3aed;">${count} pages \xb7 ${fans} fans</div>
       </div>
       <form action="/group-delete" method="POST" style="margin:0;">
         <input type="hidden" name="group" value="${esc(g)}"/>
-        <button type="submit" title="Delete group (pages stay, just unassigned)" onclick="return confirm('Delete group &quot;${esc(g)}&quot;? Pages will become unassigned.')" style="background:none;border:none;cursor:pointer;color:#dc2626;font-size:16px;padding:0;">×</button>
+        <button type="submit" title="Delete group" onclick="return confirm('Delete group &quot;${esc(g)}&quot;? Pages will become unassigned.')" style="background:none;border:none;cursor:pointer;color:#dc2626;font-size:16px;padding:0;line-height:1;">\xd7</button>
       </form>
     </div>`;
   }).join('');
 
-  // Per-page group assignment table
+  const groupOpts = ['', ...groups].map(g =>
+    `<option value="${esc(g)}">${g || '\u2014 unassigned \u2014'}</option>`
+  ).join('');
+
   const rows = pages.map(p => {
-    const groupOpts = ['', ...groups].map(g =>
-      `<option value="${esc(g)}" ${(p.group || '') === g ? 'selected' : ''}>${g || '— unassigned —'}</option>`
-    ).join('');
-    return `<tr>
-      <td><strong>${esc(p.label)}</strong><br/><span style="font-size:11px;color:#6b7280;">${esc(p.pageId)}</span></td>
-      <td>
-        <form action="/group-assign" method="POST" style="margin:0;display:flex;gap:6px;align-items:center;">
-          <input type="hidden" name="pageId" value="${esc(p.pageId)}"/>
-          <select name="group" style="padding:5px 8px;font-size:13px;border:1px solid #cbd5e1;border-radius:5px;width:auto;">
-            ${groupOpts}
-          </select>
-          <button type="submit" class="qbtn" style="background:#6d28d9;">✓ Save</button>
-        </form>
+    return `<tr class="grp-row" data-label="${esc((p.label||'').toLowerCase())}">
+      <td style="width:32px;text-align:center;">
+        <input type="checkbox" class="grp-chk" value="${esc(p.pageId)}" style="width:16px;height:16px;cursor:pointer;accent-color:#6d28d9;"/>
       </td>
-      <td><span class="group-badge ${p.group ? '' : 'unassigned'}">${esc(p.group || 'unassigned')}</span></td>
+      <td><strong>${esc(p.label)}</strong><br/><span style="font-size:11px;color:#6b7280;">${esc(p.pageId)}</span></td>
+      <td><span class="group-badge ${p.group ? '' : 'unassigned'}" id="gbadge-${esc(p.pageId)}">${esc(p.group || 'unassigned')}</span></td>
     </tr>`;
   }).join('');
 
   return `
     <div class="card" style="border:2px solid #c4b5fd;">
-      <h2>📦 Page Groups <span style="font-size:12px;font-weight:400;color:#7c3aed;">— send to Part 1, Part 2, Part 3 separately or all at once</span></h2>
-      <p style="color:#6b7280;font-size:13px;">Assign pages to groups so you can Send Now to one group at a time. Create a group by typing a name below, then assign pages to it.</p>
+      <h2>\ud83d\udce6 Page Groups <span style="font-size:12px;font-weight:400;color:#7c3aed;">\u2014 send to Part 1, Part 2, Part 3 separately or all at once</span></h2>
+      <p style="color:#6b7280;font-size:13px;">Assign pages to groups so you can Send Now to one group at a time. Create a group first, then tick pages and assign them in one click \u2014 no redirects.</p>
 
       <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
-        ${pills || '<span style="color:#94a3b8;font-size:13px;">No groups yet — create one below.</span>'}
+        ${pills || '<span style="color:#94a3b8;font-size:13px;">No groups yet \u2014 create one below.</span>'}
         ${unassigned.length ? `<div style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;display:inline-flex;align-items:center;">
-          <div style="font-size:13px;color:#94a3b8;">⬜ Unassigned: <strong>${unassigned.length} pages</strong></div>
+          <div style="font-size:13px;color:#94a3b8;">\u2b1c Unassigned: <strong>${unassigned.length} pages</strong></div>
         </div>` : ''}
       </div>
 
       <form action="/group-create" method="POST" style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
         <input type="text" name="group" autocomplete="off" placeholder='New group name, e.g. "Part 1"' style="flex:1;min-width:200px;max-width:320px;padding:8px 12px;border:1px solid #c4b5fd;border-radius:6px;font-size:14px;"/>
-        <button type="submit" class="btn" style="background:#6d28d9;color:#fff;margin-top:0;">➕ Create Group</button>
+        <button type="submit" class="btn" style="background:#6d28d9;color:#fff;margin-top:0;">\u2795 Create Group</button>
       </form>
 
-      <details>
-        <summary style="cursor:pointer;font-weight:600;color:#6d28d9;padding:6px 0;">▶ Assign pages to groups (${pages.length} pages)</summary>
-        <table style="margin-top:10px;">
-          <thead><tr><th>Page</th><th>Assign to Group</th><th>Current Group</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
+      <details id="grp-assign-details">
+        <summary style="cursor:pointer;font-weight:600;color:#6d28d9;padding:6px 0;">\u25b6 Assign pages to groups (${pages.length} pages)</summary>
+        <div style="margin-top:10px;">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;margin-bottom:10px;">
+            <button type="button" onclick="grpSelectAll(true)" class="qbtn" style="background:#6d28d9;">\u2611 Select All</button>
+            <button type="button" onclick="grpSelectAll(false)" class="qbtn" style="background:#94a3b8;">\u2610 Clear</button>
+            <input type="text" id="grp-filter" autocomplete="off" placeholder="\ud83d\udd0e Filter pages\u2026" oninput="grpFilter(this.value)" style="padding:5px 10px;border:1px solid #c4b5fd;border-radius:6px;font-size:13px;width:180px;"/>
+            <span style="color:#cbd5e1;font-size:18px;">|</span>
+            <select id="grp-target" style="padding:6px 10px;border:1px solid #6d28d9;border-radius:6px;font-size:13px;color:#6d28d9;font-weight:600;background:#fff;">
+              ${groupOpts}
+            </select>
+            <button type="button" onclick="grpAssignSelected()" class="qbtn" style="background:#6d28d9;padding:6px 14px;font-size:13px;">\u2713 Assign Selected</button>
+            <span id="grp-sel-count" style="font-size:12px;color:#7c3aed;font-weight:600;"></span>
+            <span id="grp-status" style="font-size:12px;font-weight:600;"></span>
+          </div>
+          <table>
+            <thead><tr><th style="width:32px;"></th><th>Page</th><th>Current Group</th></tr></thead>
+            <tbody id="grp-tbody">${rows}</tbody>
+          </table>
+        </div>
       </details>
-    </div>`;
+    </div>
+    <script>
+      function grpFilter(q) {
+        q = (q || '').toLowerCase();
+        document.querySelectorAll('.grp-row').forEach(function(r) {
+          r.style.display = r.getAttribute('data-label').indexOf(q) !== -1 ? '' : 'none';
+        });
+      }
+      function grpSelectAll(on) {
+        document.querySelectorAll('.grp-chk').forEach(function(c) {
+          if (c.closest('tr').style.display !== 'none') c.checked = on;
+        });
+        grpUpdateCount();
+      }
+      function grpUpdateCount() {
+        var n = document.querySelectorAll('.grp-chk:checked').length;
+        var el = document.getElementById('grp-sel-count');
+        if (el) el.textContent = n ? n + ' selected' : '';
+      }
+      function grpAssignSelected() {
+        var checked = document.querySelectorAll('.grp-chk:checked');
+        var ids = []; for (var i = 0; i < checked.length; i++) ids.push(checked[i].value);
+        if (!ids.length) { alert('Tick at least one page first.'); return; }
+        var group = document.getElementById('grp-target').value;
+        var label = group || 'unassigned';
+        if (!confirm('Assign ' + ids.length + ' page(s) to "' + label + '"?')) return;
+        var status = document.getElementById('grp-status');
+        status.style.color = '#6b7280'; status.textContent = 'Saving\u2026';
+        fetch('/group-assign-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pageIds: ids, group: group })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d && d.ok) {
+            status.style.color = '#16a34a';
+            status.textContent = '\u2713 ' + d.updated + ' pages \u2192 "' + label + '"';
+            ids.forEach(function(pid) {
+              var badge = document.getElementById('gbadge-' + pid);
+              if (badge) {
+                badge.textContent = group || 'unassigned';
+                badge.className = 'group-badge' + (group ? '' : ' unassigned');
+              }
+              var chk = document.querySelector('.grp-chk[value="' + pid + '"]');
+              if (chk) chk.checked = false;
+            });
+            grpUpdateCount();
+            setTimeout(function() { status.textContent = ''; }, 3000);
+          } else {
+            status.style.color = '#dc2626';
+            status.textContent = '\u2717 ' + ((d && d.error) || 'failed');
+          }
+        })
+        .catch(function(e) { status.style.color = '#dc2626'; status.textContent = '\u2717 ' + e.message; });
+      }
+      document.addEventListener('change', function(e) {
+        if (e.target && e.target.classList.contains('grp-chk')) grpUpdateCount();
+      });
+    </script>`;
 }
 
 // ============================================
@@ -2291,6 +2357,18 @@ app.post('/group-assign', (req, res) => {
   } else {
     res.redirect('/?page=all&saved=1');
   }
+});
+
+// Bulk assign multiple pages to a group in one AJAX call — no redirect
+app.post('/group-assign-bulk', (req, res) => {
+  const { pageIds, group } = req.body;
+  if (!Array.isArray(pageIds) || !pageIds.length) return res.json({ ok: false, error: 'No pages provided' });
+  const groupName = (group || '').trim();
+  let updated = 0;
+  pageIds.forEach(pid => {
+    if (getPage(pid)) { updatePage(pid, { group: groupName }); updated++; }
+  });
+  res.json({ ok: true, updated });
 });
 
 // Delete a group — unassigns all pages in it and removes from settings
