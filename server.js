@@ -1553,7 +1553,7 @@ function renderTemplateManager(req) {
       })();
       renderPhotoGrid(); setupDropzone();
       document.addEventListener('change', function(e){ if (e.target && e.target.classList && e.target.classList.contains('tmpl-sel')) updateSelCount(); });
-      // All template data in ONE safe block — avoids inline <script> per card breaking on special chars
+      // All template data in ONE safe block — avoids inline script tags per card breaking on special chars
       // getTmpl is lazy: reads the JSON element on first call (it's parsed by then since script runs after DOM)
       function getTmpl(id){
         if (!window.__tmplData) {
