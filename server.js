@@ -1457,17 +1457,6 @@ function renderTemplateManager(req) {
         if (!url) { alert('A URL is required.'); return; }
         window.location.href = '/template-duplicate?id=' + encodeURIComponent(id) + '&to=' + encodeURIComponent(toSet) + '&url=' + encodeURIComponent(url);
       }
-      function manualLink(id, otherSet) {
-        var t = getTmpl(id); if (!t) return;
-        var pid = prompt('Enter the ID of the ' + otherSet + ' card to link to (starts with t). Once linked, edits sync photos/title/subtitle/button to the other card.', '');
-        if (pid === null) return; pid = (pid || '').trim();
-        if (!pid) { alert('An ID is required.'); return; }
-        if (!confirm('Link ' + (t.title || id) + ' to ' + pid + '? Edits will sync between them.')) return;
-        fetch('/template-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, partnerId: pid }) })
-          .then(function(r){ return r.json(); })
-          .then(function(d){ if (d && d.ok) { location.href = '/?page=templates&lib_msg=' + encodeURIComponent('Cards linked! Edits will now sync between them.'); } else { alert('Link failed: ' + ((d && d.error) || 'unknown error')); } })
-          .catch(function(e){ alert('Error: ' + e.message); });
-      }
       function updateSelCount() { var n = document.querySelectorAll('.tmpl-sel:checked').length; var el = document.getElementById('sel-count'); if (el) el.textContent = n ? (n + ' selected') : ''; }
       function selectAllTmpls(on) { var b = document.querySelectorAll('.tmpl-sel'); for (var i = 0; i < b.length; i++) b[i].checked = on; updateSelCount(); }
       function bulkSetActive(makeActive) {
@@ -1554,17 +1543,78 @@ function renderTemplateManager(req) {
       document.addEventListener('change', function(e){ if (e.target && e.target.classList && e.target.classList.contains('tmpl-sel')) updateSelCount(); });
       // Button click delegation — avoids ALL quoting issues with onclick attributes
       document.addEventListener('click', function(e) {
-        var btn = e.target.closest('.tmpl-edit-btn, .tmpl-dup-btn, .tmpl-link-btn, .pg-copy-btn, .pg-remove-btn');
+        var btn = e.target.closest('.tmpl-edit-btn, .tmpl-dup-btn, .tmpl-link-btn, .pg-copy-btn, .pg-remove-btn, .link-pick-btn, .link-modal-close');
         if (!btn) return;
         if (btn.classList.contains('tmpl-edit-btn')) { editTmpl(btn.getAttribute('data-id')); }
         else if (btn.classList.contains('tmpl-dup-btn')) { dupTmpl(btn.getAttribute('data-id'), btn.getAttribute('data-otherset')); }
-        else if (btn.classList.contains('tmpl-link-btn')) { manualLink(btn.getAttribute('data-id'), btn.getAttribute('data-otherset')); }
+        else if (btn.classList.contains('tmpl-link-btn')) { showLinkPicker(btn.getAttribute('data-id'), btn.getAttribute('data-otherset')); }
         else if (btn.classList.contains('pg-copy-btn')) {
           var el = document.getElementById(btn.getAttribute('data-uid'));
           if (el) { el.select(); document.execCommand('copy'); btn.textContent = '✓ Copied!'; btn.style.background = '#16a34a'; setTimeout(function(){ btn.textContent = '📋 Copy URL'; btn.style.background = '#6b7280'; }, 1400); }
         }
         else if (btn.classList.contains('pg-remove-btn')) { removePhotoFromForm(parseInt(btn.getAttribute('data-idx'))); }
+        else if (btn.classList.contains('link-pick-btn')) {
+          var srcId = btn.getAttribute('data-src');
+          var partnerId = btn.getAttribute('data-partner');
+          closeLinkPicker();
+          doLink(srcId, partnerId);
+        }
+        else if (btn.classList.contains('link-modal-close')) { closeLinkPicker(); }
       });
+      // Close modal if clicking backdrop
+      document.addEventListener('click', function(e) {
+        var modal = document.getElementById('link-picker-modal');
+        if (modal && e.target === modal) closeLinkPicker();
+      });
+      function closeLinkPicker() {
+        var m = document.getElementById('link-picker-modal');
+        if (m) m.remove();
+      }
+      function showLinkPicker(srcId, otherSet) {
+        var allTemplates = window.__tmplData || {};
+        // Get src card info
+        var src = allTemplates[srcId];
+        if (!src) return;
+        // Get all cards from the other set that are not already linked
+        var candidates = Object.values(allTemplates).filter(function(t) {
+          return t.set === otherSet && !t.linkedId;
+        });
+        var cards = candidates.map(function(t) {
+          return '<div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;background:#fff;" class="link-pick-row">'
+            + '<img src="' + (t.photo||'') + '" style="width:56px;height:56px;object-fit:cover;border-radius:6px;flex-shrink:0;" onerror="imgFail(this)"/>'
+            + '<div style="flex:1;min-width:0;">'
+            + '<div style="font-weight:700;font-size:13px;color:#1a1d2e;">' + (t.title||'(no title)') + '</div>'
+            + '<div style="font-size:11px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (t.subtitle||'') + '</div>'
+            + '<div style="font-size:10px;color:#94a3b8;font-family:monospace;margin-top:2px;">' + (t.redirect||'').replace('https://','') + '</div>'
+            + '</div>'
+            + '<button class="link-pick-btn qbtn" data-src="' + srcId + '" data-partner="' + t.id + '" style="background:#6d28d9;white-space:nowrap;">🔗 Link</button>'
+            + '</div>';
+        }).join('');
+        var html = '<div id="link-picker-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;">'
+          + '<div style="background:#fff;border-radius:12px;width:100%;max-width:560px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3);">'
+          + '<div style="padding:16px 20px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;">'
+          + '<div>'
+          + '<div style="font-weight:700;font-size:16px;color:#1a1d2e;">🔗 Link to ' + otherSet + ' card</div>'
+          + '<div style="font-size:12px;color:#6b7280;margin-top:2px;">Linking: <strong>' + (src.title||srcId) + '</strong> → pick a ' + otherSet + ' card below</div>'
+          + '</div>'
+          + '<button class="link-modal-close" style="background:none;border:none;font-size:22px;cursor:pointer;color:#94a3b8;padding:0;line-height:1;">×</button>'
+          + '</div>'
+          + '<div style="overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px;">'
+          + (candidates.length ? cards : '<div style="text-align:center;padding:32px;color:#94a3b8;">No unlinked ' + otherSet + ' cards available.<br/>Duplicate first, or create a new ' + otherSet + ' card.</div>')
+          + '</div>'
+          + '</div>'
+          + '</div>';
+        document.body.insertAdjacentHTML('beforeend', html);
+      }
+      function doLink(srcId, partnerId) {
+        fetch('/template-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: srcId, partnerId: partnerId }) })
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            if (d && d.ok) { location.href = '/?page=templates&lib_msg=Cards+linked+successfully'; }
+            else { alert('Link failed: ' + ((d && d.error) || 'unknown')); }
+          })
+          .catch(function(e){ alert('Error: ' + e.message); });
+      }
       // All template data in ONE safe block — avoids inline script tags per card breaking on special chars
       // getTmpl is lazy: reads the JSON element on first call (it's parsed by then since script runs after DOM)
       function getTmpl(id){
