@@ -1504,7 +1504,7 @@ function renderTemplateManager(req) {
         renderPhotoGrid();
         document.getElementById('f-button').value = t.buttonText || '';
         document.getElementById('f-redirect').value = t.redirect || '';
-        document.getElementById('f-set').value = t.set || '${DEFAULT_SET}';
+        document.getElementById('f-set').value = t.set || 'Scrollgallery';
         document.getElementById('tmpl-form').action = '/template-edit';
         document.getElementById('form-title').textContent = '✏️ Edit Template';
         document.getElementById('f-submit').textContent = '💾 Save Changes';
@@ -1565,7 +1565,7 @@ function renderTemplateManager(req) {
     </script>
     <script type="application/json" id="tmpl-data-json">${JSON.stringify(
       Object.fromEntries((lib.cardTemplates || []).map(t => [t.id, t]))
-    )}</script>
+    ).replace(/<\/script>/gi, '<\\/script>')}</script>
   </div>`;
 }
 
