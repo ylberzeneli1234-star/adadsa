@@ -120,11 +120,30 @@ function removePage(pageId) {
 // ============================================
 // PAGE GROUPS HELPERS
 // ============================================
-// Returns sorted unique group names from all pages (excluding empty)
+// Returns sorted unique group names — from settings (registered groups) + any pages already assigned
 function getAllGroups(pages) {
   pages = pages || loadPages();
-  const names = [...new Set(pages.map(p => (p.group || '').trim()).filter(Boolean))];
-  return names.sort();
+  const s = loadSettings();
+  const saved = Array.isArray(s.groups) ? s.groups : [];
+  const fromPages = pages.map(p => (p.group || '').trim()).filter(Boolean);
+  const all = [...new Set([...saved, ...fromPages])];
+  return all.sort();
+}
+
+// Save a group name into settings so it persists even before pages are assigned
+function saveGroupName(name) {
+  name = (name || '').trim();
+  if (!name) return;
+  const s = loadSettings();
+  s.groups = Array.isArray(s.groups) ? s.groups : [];
+  if (!s.groups.includes(name)) { s.groups.push(name); s.groups.sort(); saveSettings(s); }
+}
+
+// Remove a group name from settings
+function deleteGroupName(name) {
+  const s = loadSettings();
+  s.groups = (Array.isArray(s.groups) ? s.groups : []).filter(g => g !== name);
+  saveSettings(s);
 }
 
 // ============================================
@@ -972,7 +991,7 @@ function renderGroupManager(pages) {
       </div>
 
       <form action="/group-create" method="POST" style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
-        <input type="text" name="group" placeholder='New group name, e.g. "Part 1"' style="flex:1;min-width:200px;max-width:320px;padding:8px 12px;border:1px solid #c4b5fd;border-radius:6px;font-size:14px;"/>
+        <input type="text" name="group" autocomplete="off" placeholder='New group name, e.g. "Part 1"' style="flex:1;min-width:200px;max-width:320px;padding:8px 12px;border:1px solid #c4b5fd;border-radius:6px;font-size:14px;"/>
         <button type="submit" class="btn" style="background:#6d28d9;color:#fff;margin-top:0;">➕ Create Group</button>
       </form>
 
@@ -1231,8 +1250,7 @@ function renderTemplateManager(req) {
             <a href="/template-delete?id=${t.id}" onclick="return confirm('Delete this template?')" class="qbtn" style="background:#dc2626;">🗑️</a>
           </div>
         </div>
-      </div>
-      <script>window.__t_${t.id} = ${JSON.stringify(t)};</script>`;
+      </div>`;
     }).join('');
 
     return `
@@ -1368,14 +1386,14 @@ function renderTemplateManager(req) {
       function removePhotoFromForm(i) { formPhotos.splice(i, 1); renderPhotoGrid(); }
       function validateTmplForm() { if (!formPhotos.length) { alert('Add at least one photo.'); return false; } return true; }
       function dupTmpl(id, toSet) {
-        var t = window['__t_' + id]; if (!t) return;
+        var t = getTmpl(id); if (!t) return;
         var url = prompt('Enter the ' + toSet + ' gallery URL for the duplicate:\n\n(The two cards will be LINKED — editing one syncs photos/title/subtitle/button to the other)', '');
         if (url === null) return; url = (url || '').trim();
         if (!url) { alert('A URL is required.'); return; }
         window.location.href = '/template-duplicate?id=' + encodeURIComponent(id) + '&to=' + encodeURIComponent(toSet) + '&url=' + encodeURIComponent(url);
       }
       function manualLink(id, otherSet) {
-        var t = window['__t_' + id]; if (!t) return;
+        var t = getTmpl(id); if (!t) return;
         var pid = prompt('Enter the ID of the ' + otherSet + ' card to link to.\n\n(You can find the ID by hovering/inspecting a card, or ask: it starts with "t" e.g. t1234567890)\n\nOnce linked, editing either card will sync photos, title, subtitle and button to the other — each keeps its own redirect URL.', '');
         if (pid === null) return; pid = (pid || '').trim();
         if (!pid) { alert('An ID is required.'); return; }
@@ -1412,7 +1430,7 @@ function renderTemplateManager(req) {
         else if (redirect && redirect.indexOf('scrollgallery') !== -1) setSel.value = 'Scrollgallery';
       }
       function editTmpl(id) {
-        var t = window['__t_' + id]; if (!t) return;
+        var t = getTmpl(id); if (!t) return;
         document.getElementById('f-id').value = t.id;
         document.getElementById('f-title').value = t.title || '';
         document.getElementById('f-subtitle').value = t.subtitle || '';
@@ -1431,7 +1449,7 @@ function renderTemplateManager(req) {
         var lrid = document.getElementById('f-linked-id');
         var lrurl = document.getElementById('f-linked-redirect');
         if (t.linkedId) {
-          var partner = window['__t_' + t.linkedId];
+          var partner = getTmpl(t.linkedId);
           lb.style.display = 'block';
           lbl.textContent = '(this card\'s own URL — stays separate from partner)';
           lrid.value = t.linkedId;
@@ -1469,7 +1487,13 @@ function renderTemplateManager(req) {
       })();
       renderPhotoGrid(); setupDropzone();
       document.addEventListener('change', function(e){ if (e.target && e.target.classList && e.target.classList.contains('tmpl-sel')) updateSelCount(); });
+      // All template data in ONE safe block — avoids inline <script> per card breaking on special chars
+      window.__tmplData = JSON.parse(document.getElementById('tmpl-data-json').textContent);
+      function getTmpl(id){ return window.__tmplData[id] || null; }
     </script>
+    <script type="application/json" id="tmpl-data-json">${JSON.stringify(
+      Object.fromEntries((lib.cardTemplates || []).map(t => [t.id, t]))
+    )}</script>
   </div>`;
 }
 
@@ -2242,13 +2266,12 @@ app.post('/toggle-sendnow', (req, res) => {
 // ============================================
 // PAGE GROUPS ROUTES
 // ============================================
-// Create a new group name (no pages assigned yet)
+// Create a new group name — stored in settings so it shows in dropdowns immediately
 app.post('/group-create', (req, res) => {
   const group = (req.body.group || '').trim();
   if (!group) return res.redirect('/?error=' + encodeURIComponent('Group name cannot be empty'));
-  // Group is just a string — no separate storage needed. It becomes real when a page uses it.
-  // We just redirect back with a message; user assigns pages via /group-assign.
-  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Group "' + group + '" created. Now assign pages to it below.'));
+  saveGroupName(group);
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Group "' + group + '" created — now assign pages to it below.'));
 });
 
 // Assign a page to a group (or unassign with empty string)
@@ -2264,14 +2287,13 @@ app.post('/group-assign', (req, res) => {
   }
 });
 
-// Delete a group — just unassigns all pages in it
+// Delete a group — unassigns all pages in it and removes from settings
 app.post('/group-delete', (req, res) => {
   const group = (req.body.group || '').trim();
   if (!group) return res.redirect('/?page=all');
   const pages = loadPages();
-  pages.forEach(p => {
-    if (p.group === group) updatePage(p.pageId, { group: '' });
-  });
+  pages.forEach(p => { if (p.group === group) updatePage(p.pageId, { group: '' }); });
+  deleteGroupName(group);
   res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Group "' + group + '" deleted — pages unassigned'));
 });
 
