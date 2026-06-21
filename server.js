@@ -1488,8 +1488,14 @@ function renderTemplateManager(req) {
       renderPhotoGrid(); setupDropzone();
       document.addEventListener('change', function(e){ if (e.target && e.target.classList && e.target.classList.contains('tmpl-sel')) updateSelCount(); });
       // All template data in ONE safe block — avoids inline <script> per card breaking on special chars
-      window.__tmplData = JSON.parse(document.getElementById('tmpl-data-json').textContent);
-      function getTmpl(id){ return window.__tmplData[id] || null; }
+      // getTmpl is lazy: reads the JSON element on first call (it's parsed by then since script runs after DOM)
+      function getTmpl(id){
+        if (!window.__tmplData) {
+          var el = document.getElementById('tmpl-data-json');
+          window.__tmplData = el ? JSON.parse(el.textContent) : {};
+        }
+        return window.__tmplData[id] || null;
+      }
     </script>
     <script type="application/json" id="tmpl-data-json">${JSON.stringify(
       Object.fromEntries((lib.cardTemplates || []).map(t => [t.id, t]))
