@@ -1540,6 +1540,15 @@ function renderTemplateManager(req) {
         setTimeout(function(){ el.style.boxShadow = 'none'; }, 2600);
       })();
       renderPhotoGrid(); setupDropzone();
+      // Save scroll position before any navigation, restore on reload
+      (function() {
+        var key = 'tmpl_scroll';
+        var saved = sessionStorage.getItem(key);
+        if (saved) { sessionStorage.removeItem(key); setTimeout(function(){ window.scrollTo(0, parseInt(saved)); }, 80); }
+        window.addEventListener('beforeunload', function() {
+          if (location.search.indexOf('page=templates') !== -1) sessionStorage.setItem(key, window.scrollY);
+        });
+      })();
       document.addEventListener('change', function(e){ if (e.target && e.target.classList && e.target.classList.contains('tmpl-sel')) updateSelCount(); });
       // Button click delegation — avoids ALL quoting issues with onclick attributes
       document.addEventListener('click', function(e) {
