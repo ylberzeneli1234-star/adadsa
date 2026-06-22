@@ -1571,6 +1571,8 @@ function renderTemplateManager(req) {
         if (m) m.remove();
       }
       function showLinkPicker(srcId, otherSet) {
+        // Force-load template data if not yet initialized (getTmpl is lazy)
+        getTmpl(srcId);
         var allTemplates = window.__tmplData || {};
         // Get src card info
         var src = allTemplates[srcId];
