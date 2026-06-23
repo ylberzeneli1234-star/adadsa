@@ -1785,7 +1785,8 @@ function renderAllPagesView(pages, req) {
     const sendNowToggle = sendNowOn
       ? `<form action="/toggle-sendnow" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn" style="background:#f59e0b;">🚫 Pause SN</button></form>`
       : `<form action="/toggle-sendnow" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-resume">✅ Resume SN</button></form>`;
-    return `<tr>
+    return `<tr class="page-row" draggable="true" data-id="${esc(p.pageId)}">
+      <td style="width:28px;text-align:center;cursor:grab;color:#cbd5e1;font-size:18px;padding:10px 4px;" class="drag-handle" title="Drag to reorder">⠿</td>
       <td><strong>${esc(p.label)}</strong><br/><span style="font-size:11px;color:#6b7280;">${esc(p.pageId)}</span><br/>${groupBadge}</td>
       <td>${fans.length}</td>
       <td>${clicksToday} / ${clicks}</td>
@@ -1868,8 +1869,8 @@ function renderAllPagesView(pages, req) {
           </div>
 
           <table>
-            <thead><tr><th>Page / Group</th><th>Fans</th><th>Clicks (today/total)</th><th>Messages</th><th>Status</th><th>Send Progress</th><th>Actions</th></tr></thead>
-            <tbody>${rows}</tbody>
+            <thead><tr><th style="width:28px;" title="Drag rows to reorder">⠿</th><th>Page / Group <span id="reorder-status" style="font-size:11px;font-weight:400;margin-left:8px;"></span></th><th>Fans</th><th>Clicks (today/total)</th><th>Messages</th><th>Status</th><th>Send Progress</th><th>Actions</th></tr></thead>
+            <tbody id="pages-tbody">${rows}</tbody>
           </table>
 
           <div class="card" style="margin-top:0;">
@@ -1968,6 +1969,88 @@ function renderAllPagesView(pages, req) {
       })();
     </script>
 
+    <script>
+      // ── Drag & drop row reorder for pages table ──
+      (function() {
+        var tbody = document.getElementById('pages-tbody');
+        if (!tbody) return;
+        var dragging = null;
+
+        tbody.addEventListener('dragstart', function(e) {
+          var row = e.target.closest('tr.page-row');
+          if (!row) return;
+          dragging = row;
+          row.style.opacity = '0.4';
+          e.dataTransfer.effectAllowed = 'move';
+        });
+
+        tbody.addEventListener('dragend', function(e) {
+          var row = e.target.closest('tr.page-row');
+          if (row) row.style.opacity = '';
+          document.querySelectorAll('tr.page-row').forEach(function(r) {
+            r.style.borderTop = '';
+          });
+          dragging = null;
+        });
+
+        tbody.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          var row = e.target.closest('tr.page-row');
+          if (!row || row === dragging) return;
+          document.querySelectorAll('tr.page-row').forEach(function(r) { r.style.borderTop = ''; });
+          var rect = row.getBoundingClientRect();
+          var mid = rect.top + rect.height / 2;
+          if (e.clientY < mid) {
+            row.style.borderTop = '3px solid #6366f1';
+          } else {
+            var next = row.nextElementSibling;
+            if (next) next.style.borderTop = '3px solid #6366f1';
+            else row.style.borderBottom = '3px solid #6366f1';
+          }
+        });
+
+        tbody.addEventListener('drop', function(e) {
+          e.preventDefault();
+          var row = e.target.closest('tr.page-row');
+          if (!row || row === dragging) return;
+          document.querySelectorAll('tr.page-row').forEach(function(r) {
+            r.style.borderTop = ''; r.style.borderBottom = '';
+          });
+          var rect = row.getBoundingClientRect();
+          var mid = rect.top + rect.height / 2;
+          if (e.clientY < mid) {
+            tbody.insertBefore(dragging, row);
+          } else {
+            tbody.insertBefore(dragging, row.nextSibling);
+          }
+          // Save new order
+          var ids = [];
+          tbody.querySelectorAll('tr.page-row').forEach(function(r) {
+            ids.push(r.getAttribute('data-id'));
+          });
+          var indicator = document.getElementById('reorder-status');
+          if (indicator) { indicator.style.color = '#6b7280'; indicator.textContent = 'Saving order…'; }
+          fetch('/pages-reorder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ order: ids })
+          })
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (indicator) {
+              indicator.style.color = d.ok ? '#16a34a' : '#dc2626';
+              indicator.textContent = d.ok ? '✓ Order saved' : '✗ Save failed';
+              setTimeout(function() { indicator.textContent = ''; }, 2000);
+            }
+          })
+          .catch(function() {
+            if (indicator) { indicator.style.color = '#dc2626'; indicator.textContent = '✗ Error'; }
+          });
+        });
+      })();
+    </script>
+
     ${renderLibraryManager()}
 
     <div class="card">
@@ -2038,30 +2121,11 @@ function renderAllPagesView(pages, req) {
 
 function renderPageView(page, req) {
   const fans = loadFans(page.pageId);
-  const stats = loadStats(page.pageId);
-  const todayStr = new Date().toISOString().split('T')[0];
-  const weekAgo = new Date(Date.now() - 7*86400000).toISOString().split('T')[0];
-
-  const clicks = stats.clicks || [];
-  const clicksToday = clicks.filter(c => c.time.startsWith(todayStr)).length;
-  const totalClicks = clicks.length;
-  const sent = stats.messagesSent || 0;
-  const failed = stats.messagesFailed || 0;
-  const delivered = (stats.delivered || []).length;
-  const seen = (stats.readers || []).length;
-  const fansAdded = stats.fansAdded || [];
-  const fansToday = fansAdded.filter(f => f.time.startsWith(todayStr)).length;
-  const fansThisWeek = fansAdded.filter(f => f.time >= weekAgo).length;
-  const newOrganic = fansAdded.length;
-  const removedFans = stats.removedFans || [];
-  const removedToday = removedFans.filter(r => r.time.startsWith(todayStr)).length;
-  const removedTotal = removedFans.length;
-  const imported = Math.max(0, fans.length - newOrganic);
-  const baseline = page.baselineFans || 0;
-  const growth = baseline > 0 ? fans.length - baseline : 0;
-
-  const pct = (n, d) => d > 0 ? Math.round((n/d) * 100) : 0;
-  const openRate = pct(seen, delivered);
+  const lib = loadLibrary();
+  const currentSet = pageSet(page, lib);
+  const setNames = getSetNames(lib);
+  const mode = pageContentMode(page);
+  const pid = esc(page.pageId);
 
   const photosHtml = (page.photos || []).map((url, i) => {
     const isActive = url === page.currentPhoto;
@@ -2073,12 +2137,12 @@ function renderPageView(page, req) {
         <input type="text" id="${copyId}" value="${esc(url)}" readonly onclick="this.select();"/>
       </div>
       <div class="action-row">
-        <button type="button" class="ph-btn ph-copy" onclick="(function(b){var i=document.getElementById('${copyId}');i.select();document.execCommand('copy');var t=b.innerText;b.innerText='✓ Copied';setTimeout(function(){b.innerText=t;},1200);})(this)">📋 Copy URL</button>
+        <button type="button" class="ph-btn ph-copy" onclick="(function(b){var i=document.getElementById('${copyId}');i.select();document.execCommand('copy');var t=b.innerText;b.innerText='Copied';setTimeout(function(){b.innerText=t;},1200);})(this)">Copy URL</button>
         ${isActive
-          ? '<span class="badge-current">✓ ACTIVE</span>'
-          : `<a href="/set-active-photo?page=${esc(page.pageId)}&index=${i}" class="ph-btn ph-active">★ Set Active</a>`
+          ? '<span class="badge-current">ACTIVE</span>'
+          : `<a href="/set-active-photo?page=${pid}&index=${i}" class="ph-btn ph-active">Set Active</a>`
         }
-        ${(page.photos.length > 1) ? `<a href="/remove-photo?page=${esc(page.pageId)}&index=${i}" onclick="return confirm('Remove this photo?')" class="ph-btn ph-remove">× Remove</a>` : ''}
+        ${(page.photos.length > 1) ? `<a href="/remove-photo?page=${pid}&index=${i}" onclick="return confirm('Remove this photo?')" class="ph-btn ph-remove">Remove</a>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -2086,84 +2150,131 @@ function renderPageView(page, req) {
   const pages = loadPages();
   const groups = getAllGroups(pages);
   const groupOpts = ['', ...groups].map(g =>
-    `<option value="${esc(g)}" ${(page.group || '') === g ? 'selected' : ''}>${g || '— unassigned —'}</option>`
+    `<option value="${esc(g)}" ${(page.group || '') === g ? 'selected' : ''}>${g || '--- unassigned ---'}</option>`
   ).join('');
+
+  const setButtons = setNames.map(name => {
+    const isCurrent = name === currentSet;
+    const color = name === 'Scrollgallery' ? '#3a8dde' : '#f59e0b';
+    return `<form action="/set-page-redirect-set?page=${pid}" method="POST" style="margin:0;display:inline;">
+      <input type="hidden" name="setName" value="${esc(name)}"/>
+      <button type="submit" style="background:${isCurrent ? color : '#e2e8f0'};color:${isCurrent ? '#fff' : '#475569'};border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;">
+        ${isCurrent ? '&#10003; ' : ''}${esc(name)}
+      </button>
+    </form>`;
+  }).join('');
+
+  const randomizeBtn = mode === 'templates'
+    ? `<form action="/randomize-page?page=${pid}" method="POST" style="margin:0;display:inline;">
+        <button type="submit" class="btn" style="background:#8b5cf6;color:#fff;margin-top:0;">&#127924; Pick Random Template</button>
+       </form>
+       <form action="/randomize-and-send?page=${pid}" method="POST" style="margin:0;display:inline;">
+        <button type="submit" class="btn" style="background:#7c3aed;color:#fff;margin-top:0;" onclick="return confirm('Pick random template and send to ${fans.length} fans?')">&#127924;&#128640; Random + Send</button>
+       </form>`
+    : `<form action="/randomize-page?page=${pid}" method="POST" style="margin:0;display:inline;">
+        <button type="submit" class="btn" style="background:#8b5cf6;color:#fff;margin-top:0;">&#127922; Pick Random</button>
+       </form>
+       <form action="/randomize-and-send?page=${pid}" method="POST" style="margin:0;display:inline;">
+        <button type="submit" class="btn" style="background:#7c3aed;color:#fff;margin-top:0;" onclick="return confirm('Randomize and send to ${fans.length} fans?')">&#127922;&#128640; Random + Send</button>
+       </form>`;
 
   return `<div class="container">
     ${renderAlerts(req)}
+
+    <div class="card" style="background:linear-gradient(135deg,#1a1d2e 0%,#2d3154 100%);border:none;padding:18px 22px;">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+        <div style="background:rgba(255,255,255,0.1);border-radius:8px;padding:10px 16px;text-align:center;min-width:90px;">
+          <div style="font-size:26px;font-weight:800;color:#fff;line-height:1;">${fans.length.toLocaleString()}</div>
+          <div style="font-size:10px;color:#a5b4fc;text-transform:uppercase;letter-spacing:1px;margin-top:2px;">Fans</div>
+        </div>
+        <div style="width:1px;height:50px;background:rgba(255,255,255,0.15);"></div>
+        <div>
+          <div style="font-size:10px;color:#a5b4fc;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Website</div>
+          <div style="display:flex;gap:6px;">${setButtons}</div>
+        </div>
+        <div style="width:1px;height:50px;background:rgba(255,255,255,0.15);"></div>
+        <div>
+          <div style="font-size:10px;color:#a5b4fc;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Quick Actions</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${randomizeBtn}
+            <a href="/import-contacts?page=${pid}" class="btn" style="background:#16a34a;color:#fff;margin-top:0;">&#128229; Import Contacts</a>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div class="card" style="padding:12px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
       <div style="flex:1;min-width:200px;">
         <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Page Status</div>
         <div style="font-size:16px;font-weight:700;color:#1a1d2e;margin-top:2px;">
-          ${page.broadcastEnabled ? '<span style="color:#28a745;">🟢 Active</span> — daily auto-broadcast ON' : '<span style="color:#f59e0b;">⏸️ Paused</span> — daily auto-broadcast OFF'}
+          ${page.broadcastEnabled ? '<span style="color:#28a745;">&#128994; Active</span> - daily auto-broadcast ON' : '<span style="color:#f59e0b;">&#9208;&#65039; Paused</span> - daily auto-broadcast OFF'}
         </div>
         <div style="font-size:13px;color:#475569;margin-top:4px;">
-          ${page.sendNowEnabled !== false ? '<span style="color:#16a34a;">✅ Send Now ON</span>' : '<span style="color:#f59e0b;">🚫 Send Now OFF</span>'}
-          &nbsp;·&nbsp; Group: <span class="group-badge ${page.group ? '' : 'unassigned'}">${esc(page.group || 'unassigned')}</span>
+          ${page.sendNowEnabled !== false ? '<span style="color:#16a34a;">&#9989; Send Now ON</span>' : '<span style="color:#f59e0b;">&#128683; Send Now OFF</span>'}
+          &nbsp;&middot;&nbsp; Group: <span class="group-badge ${page.group ? '' : 'unassigned'}">${esc(page.group || 'unassigned')}</span>
         </div>
       </div>
       <div style="display:flex;flex-direction:column;gap:6px;">
         <form action="/toggle-page" method="POST" style="margin:0;">
-          <input type="hidden" name="pageId" value="${esc(page.pageId)}"/>
+          <input type="hidden" name="pageId" value="${pid}"/>
           <input type="hidden" name="returnTo" value="page"/>
           ${page.broadcastEnabled
-            ? '<button type="submit" class="qbtn qbtn-pause" style="padding:8px 14px;font-size:13px;width:100%;">⏸️ Pause Daily Broadcast</button>'
-            : '<button type="submit" class="qbtn qbtn-resume" style="padding:8px 14px;font-size:13px;width:100%;">▶️ Resume Daily Broadcast</button>'
+            ? '<button type="submit" class="qbtn qbtn-pause" style="padding:8px 14px;font-size:13px;width:100%;">Pause Daily Broadcast</button>'
+            : '<button type="submit" class="qbtn qbtn-resume" style="padding:8px 14px;font-size:13px;width:100%;">Resume Daily Broadcast</button>'
           }
         </form>
         <form action="/toggle-sendnow" method="POST" style="margin:0;">
-          <input type="hidden" name="pageId" value="${esc(page.pageId)}"/>
+          <input type="hidden" name="pageId" value="${pid}"/>
           <input type="hidden" name="returnTo" value="page"/>
           ${page.sendNowEnabled !== false
-            ? '<button type="submit" class="qbtn" style="background:#f59e0b;padding:8px 14px;font-size:13px;width:100%;">🚫 Pause Send Now</button>'
-            : '<button type="submit" class="qbtn qbtn-resume" style="padding:8px 14px;font-size:13px;width:100%;">✅ Resume Send Now</button>'
+            ? '<button type="submit" class="qbtn" style="background:#f59e0b;padding:8px 14px;font-size:13px;width:100%;">Pause Send Now</button>'
+            : '<button type="submit" class="qbtn qbtn-resume" style="padding:8px 14px;font-size:13px;width:100%;">Resume Send Now</button>'
           }
         </form>
         <form action="/group-assign" method="POST" style="margin:0;display:flex;gap:5px;">
-          <input type="hidden" name="pageId" value="${esc(page.pageId)}"/>
+          <input type="hidden" name="pageId" value="${pid}"/>
           <input type="hidden" name="returnTo" value="page"/>
           <select name="group" style="padding:6px 8px;font-size:12px;border:1px solid #c4b5fd;border-radius:5px;color:#6d28d9;font-weight:600;">
             ${groupOpts}
           </select>
-          <button type="submit" class="qbtn" style="background:#6d28d9;padding:8px 10px;">📦 Set Group</button>
+          <button type="submit" class="qbtn" style="background:#6d28d9;padding:8px 10px;">Set Group</button>
         </form>
       </div>
     </div>
 
     ${(function(){
-      var gMode = getGlobalContentMode();
-      var pMode = page.contentMode;
-      var isClassic = pMode === 'classic';
-      var isTemplates = pMode === 'templates';
-      var isGlobal = !isClassic && !isTemplates;
-      var effective = isGlobal ? gMode : pMode;
+      const gMode = getGlobalContentMode();
+      const pMode = page.contentMode;
+      const isClassic = pMode === 'classic';
+      const isTemplates = pMode === 'templates';
+      const isGlobal = !isClassic && !isTemplates;
+      const effective = isGlobal ? gMode : pMode;
       return `
     <div class="card" style="border:2px solid #e9d5ff;">
-      <h2>🎚️ Content Mode</h2>
-      <p style="color:#6b7280;font-size:13px;">Effective mode: <strong style="color:${effective === 'templates' ? '#7c3aed' : '#0c447c'};">${effective === 'templates' ? '🎴 Templates' : '📷 Classic'}</strong></p>
+      <h2>&#127898;&#65039; Content Mode</h2>
+      <p style="color:#6b7280;font-size:13px;">Effective: <strong style="color:${effective === 'templates' ? '#7c3aed' : '#0c447c'};">${effective === 'templates' ? 'Templates' : 'Classic'}</strong></p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
-        <form action="/set-page-mode?page=${esc(page.pageId)}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="classic"/>
-          <button type="submit" class="btn" style="background:${isClassic ? '#16a34a' : '#e2e8f0'};color:${isClassic ? '#fff' : '#475569'};">${isClassic ? '✓ ' : ''}📷 Classic</button>
+        <form action="/set-page-mode?page=${pid}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="classic"/>
+          <button type="submit" class="btn" style="background:${isClassic ? '#16a34a' : '#e2e8f0'};color:${isClassic ? '#fff' : '#475569'};">${isClassic ? '&#10003; ' : ''}Classic</button>
         </form>
-        <form action="/set-page-mode?page=${esc(page.pageId)}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="templates"/>
-          <button type="submit" class="btn" style="background:${isTemplates ? '#16a34a' : '#e2e8f0'};color:${isTemplates ? '#fff' : '#475569'};">${isTemplates ? '✓ ' : ''}🎴 Templates</button>
+        <form action="/set-page-mode?page=${pid}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="templates"/>
+          <button type="submit" class="btn" style="background:${isTemplates ? '#16a34a' : '#e2e8f0'};color:${isTemplates ? '#fff' : '#475569'};">${isTemplates ? '&#10003; ' : ''}Templates</button>
         </form>
-        <form action="/set-page-mode?page=${esc(page.pageId)}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="global"/>
-          <button type="submit" class="btn" style="background:${isGlobal ? '#16a34a' : '#e2e8f0'};color:${isGlobal ? '#fff' : '#475569'};">${isGlobal ? '✓ ' : ''}🌐 Global (${gMode})</button>
+        <form action="/set-page-mode?page=${pid}" method="POST" style="margin:0;"><input type="hidden" name="returnTo" value="page"/><input type="hidden" name="mode" value="global"/>
+          <button type="submit" class="btn" style="background:${isGlobal ? '#16a34a' : '#e2e8f0'};color:${isGlobal ? '#fff' : '#475569'};">${isGlobal ? '&#10003; ' : ''}Global (${gMode})</button>
         </form>
       </div>
     </div>`;
     })()}
 
     <div class="card" id="broadcast-progress-card" style="display:none;border:2px solid #c7d2fe;">
-      <h2>📡 Broadcast Progress</h2>
+      <h2>&#128225; Broadcast Progress</h2>
       <div>
-        <div style="font-size:15px;font-weight:600;color:#1a1d2e;" id="bp-headline">—</div>
+        <div style="font-size:15px;font-weight:600;color:#1a1d2e;" id="bp-headline">--</div>
         <div style="background:#e2e8f0;border-radius:999px;height:14px;overflow:hidden;margin:10px 0;">
           <div id="bp-bar" style="background:#6366f1;height:100%;width:0%;transition:width 0.4s;"></div>
         </div>
-        <div style="font-size:13px;color:#6b7280;" id="bp-detail">—</div>
+        <div style="font-size:13px;color:#6b7280;" id="bp-detail">--</div>
       </div>
     </div>
     <script>
@@ -2184,12 +2295,12 @@ function renderPageView(page, req) {
               bar.style.width = pct + '%';
               if (d.status === 'complete') {
                 bar.style.background = '#22c55e';
-                headline.innerHTML = '✅ Broadcast complete — all ' + d.total + ' fans done';
-                detail.textContent = 'Sent ' + d.done + ' messages in ' + fmtTime(d.elapsedSec) + '.';
+                headline.innerHTML = 'Broadcast complete -- all ' + d.total + ' fans done';
+                detail.textContent = 'Sent ' + d.done + ' in ' + fmtTime(d.elapsedSec);
               } else {
                 bar.style.background = '#6366f1';
-                headline.innerHTML = '📡 Sending… ' + d.done + ' / ' + d.total + ' (' + pct + '%)';
-                detail.textContent = d.remaining + ' fans remaining · running ' + fmtTime(d.elapsedSec);
+                headline.innerHTML = 'Sending ' + d.done + ' / ' + d.total + ' (' + pct + '%)';
+                detail.textContent = d.remaining + ' remaining';
               }
             }).catch(function(){});
         }
@@ -2200,127 +2311,69 @@ function renderPageView(page, req) {
     <div class="card" style="border:2px solid #fde68a;padding:0;overflow:hidden;">
       <details>
         <summary style="cursor:pointer;padding:16px 20px;list-style:none;display:flex;align-items:center;gap:10px;user-select:none;">
-          <span style="font-size:13px;color:#92400e;transition:transform 0.2s;display:inline-block;" class="bp-arrow">▶</span>
-          <span style="font-size:18px;font-weight:700;color:#1a1d2e;">🔑 Page Settings</span>
-          <span style="font-size:12px;color:#6b7280;font-family:monospace;margin-left:auto;">ID: ${esc(page.pageId)} · ${esc(page.label)}</span>
+          <span style="font-size:13px;color:#92400e;transition:transform 0.2s;display:inline-block;" class="bp-arrow">&#9654;</span>
+          <span style="font-size:18px;font-weight:700;color:#1a1d2e;">Page Settings</span>
+          <span style="font-size:12px;color:#6b7280;font-family:monospace;margin-left:auto;">${esc(page.pageId)} - ${esc(page.label)}</span>
         </summary>
         <div style="padding:0 20px 20px;">
-          <form action="/edit-page?page=${esc(page.pageId)}" method="POST">
+          <form action="/edit-page?page=${pid}" method="POST">
             <label>Page Access Token</label>
             <input name="accessToken" placeholder="Paste new EAAxxx... token (leave blank to keep current)" style="font-family:monospace;font-size:12px;width:100%;"/>
-            <div class="helper">Current: <code>${page.accessToken ? esc(page.accessToken.slice(0, 12)) + '…' + esc(page.accessToken.slice(-6)) : '(none)'}</code></div>
+            <div class="helper">Current: <code>${page.accessToken ? esc(page.accessToken.slice(0,12)) + '...' + esc(page.accessToken.slice(-6)) : '(none)'}</code></div>
             <label>Page Label</label>
             <input name="label" value="${esc(page.label)}" style="width:100%;"/>
-            <button type="submit" class="btn btn-green" style="margin-top:12px;">🔑 Update</button>
+            <button type="submit" class="btn btn-green" style="margin-top:12px;">Update</button>
           </form>
         </div>
       </details>
     </div>
 
     <div class="card">
-      <h2>📊 ${esc(page.label)} — Stats</h2>
-      <div class="grid">
-        <div class="stat"><div class="v">${fans.length}</div><div class="l">Active Fans</div></div>
-        <div class="stat"><div class="v">${imported}</div><div class="l">Imported</div></div>
-        <div class="stat"><div class="v">${newOrganic}</div><div class="l">New Organic</div></div>
-        <div class="stat"><div class="v">${fansToday}</div><div class="l">New Today</div></div>
-        <div class="stat"><div class="v">${fansThisWeek}</div><div class="l">New This Week</div></div>
-        <div class="stat"><div class="v">${growth >= 0 ? '+' : ''}${growth}</div><div class="l">Growth (baseline ${baseline})</div></div>
-      </div>
-      <div style="background:#eef6ff;border:1px solid #b5d4f4;border-radius:8px;padding:10px 14px;margin-top:12px;font-size:12px;color:#0c447c;">
-        🧹 <strong>Auto-cleanup ${page.cleanupThreshold === 0 ? '<span style="color:#dc3545;">DISABLED</span>' : `threshold = ${page.cleanupThreshold === undefined ? 1 : page.cleanupThreshold}`}:</strong> ${removedTotal} fan${removedTotal === 1 ? '' : 's'} removed (${removedToday} today).
-      </div>
-      <h3>📨 Message Funnel</h3>
-      <div class="funnel">
-        <div class="step"><div class="v">${fans.length}</div><div class="l">Active Fans</div></div>
-        <div class="step"><div class="v">${delivered}</div><div class="l">Delivered</div><div class="pct">${pct(delivered, fans.length)}%</div></div>
-        <div class="step"><div class="v">${seen}</div><div class="l">Seen</div><div class="pct">${pct(seen, delivered)}%</div></div>
-        <div class="step"><div class="v">${totalClicks}</div><div class="l">Total Clicks</div><div class="pct">${pct(totalClicks, seen)}%</div></div>
-        <div class="step"><div class="v">${clicksToday}</div><div class="l">Clicks Today</div></div>
-      </div>
-      <div class="grid" style="margin-top:14px;">
-        <div class="stat"><div class="v">${sent}</div><div class="l">Sent ✅</div></div>
-        <div class="stat"><div class="v">${failed}</div><div class="l">Failed ❌</div></div>
-        <div class="stat" style="border-left-color:#3a8dde;"><div class="v">${removedTotal}</div><div class="l">🧹 Auto-Removed</div></div>
-        <div class="stat"><div class="v">${openRate}%</div><div class="l">Open Rate</div></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>📅 Daily Activity</h2>
-      ${(() => {
-        const daily = getRecentDailyStats(page.pageId, 14);
-        const today = daily[0];
-        const older = daily.slice(1);
-        const maxTotal = Math.max(1, ...daily.map(d => d.sent + d.failed));
-        const renderRow = (d, isToday) => {
-          const total = d.sent + d.failed;
-          const successRate = total > 0 ? Math.round((d.sent / total) * 100) : 0;
-          const sentPct = total > 0 ? (d.sent / maxTotal) * 100 : 0;
-          const failedPct = total > 0 ? (d.failed / maxTotal) * 100 : 0;
-          return `<tr${isToday ? ' style="background:#fffbeb;"' : ''}>
-            <td style="font-family:monospace;font-size:12px;">${esc(d.date)}${isToday ? ' <span style="background:#fde68a;color:#92400e;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;margin-left:4px;">TODAY</span>' : ''}</td>
-            <td style="text-align:right;color:#28a745;font-weight:600;">${d.sent}</td>
-            <td style="text-align:right;color:#dc3545;font-weight:600;">${d.failed}</td>
-            <td style="text-align:right;">${total > 0 ? successRate + '%' : '—'}</td>
-            <td style="width:40%;"><div style="display:flex;height:14px;background:#f0f1f5;border-radius:3px;overflow:hidden;"><div style="width:${sentPct}%;background:#28a745;"></div><div style="width:${failedPct}%;background:#dc3545;"></div></div></td>
-          </tr>`;
-        };
-        return `<table><thead><tr><th>Date</th><th style="text-align:right;">Sent ✅</th><th style="text-align:right;">Failed ❌</th><th style="text-align:right;">Success</th><th>Volume</th></tr></thead>
-          <tbody>${renderRow(today, true)}</tbody></table>
-        <details style="margin-top:10px;">
-          <summary style="cursor:pointer;font-weight:600;color:#3a8dde;font-size:13px;padding:6px 0;">▼ Show last 14 days</summary>
-          <table style="margin-top:8px;"><tbody>${older.map(d => renderRow(d, false)).join('')}</tbody></table>
-        </details>`;
-      })()}
-    </div>
-
-    <div class="card">
-      <h2>✏️ Card / Message Editor</h2>
-      <form action="/update-settings?page=${esc(page.pageId)}" method="POST">
+      <h2>Card / Message Editor</h2>
+      <form action="/update-settings?page=${pid}" method="POST">
         <div class="row">
           <div><label>Card Title</label><input name="title" value="${esc(page.title)}"/></div>
           <div><label>Card Subtitle</label><input name="subtitle" value="${esc(page.subtitle)}"/></div>
         </div>
         <div class="row">
           <div><label>Button Text</label><input name="buttonText" value="${esc(page.buttonText)}"/></div>
-          <div><label>WhatsApp / Redirect URL</label><input name="whatsapp" value="${esc(page.whatsapp)}"/></div>
+          <div><label>Redirect URL</label><input name="whatsapp" value="${esc(page.whatsapp)}"/></div>
         </div>
         <label>Active Photo URL</label>
         <input name="currentPhoto" value="${esc(page.currentPhoto || '')}"/>
         <label>Page Label</label>
         <input name="label" value="${esc(page.label)}"/>
-        <button type="submit" class="btn btn-green">💾 Save Settings</button>
+        <button type="submit" class="btn btn-green">Save Settings</button>
       </form>
     </div>
 
     <div class="card">
-      <h2>📝 Template Manager</h2>
+      <h2>Template Manager</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
         <div style="background:#eef6ff;border:1px solid #b5d4f4;border-radius:8px;padding:12px;">
-          <h3 style="margin:0 0 8px;color:#0c447c;font-size:14px;">🖼️ Template 1: Photo Card</h3>
+          <h3 style="margin:0 0 8px;color:#0c447c;font-size:14px;">Template 1: Photo Card</h3>
           <div style="background:#fff;border-radius:6px;padding:8px;margin-bottom:10px;border:1px solid #d1d5db;">
             <div style="font-size:11px;font-weight:600;color:#1a1d2e;">${esc(page.title || '(no title)')}</div>
             <div style="font-size:10px;color:#4a5568;margin:2px 0;">${esc((page.subtitle || '').slice(0, 50))}</div>
           </div>
-          <a href="/send-now?page=${esc(page.pageId)}" class="btn btn-green" style="display:block;text-align:center;margin:0;" onclick="return confirm('Send PHOTO CARD to ${fans.length} fans now?')">🚀 Send Card to All</a>
+          <a href="/send-now?page=${pid}" class="btn btn-green" style="display:block;text-align:center;margin:0;" onclick="return confirm('Send PHOTO CARD to ${fans.length} fans now?')">Send Card to All</a>
         </div>
         <div style="background:#fef3e7;border:1px solid #fde68a;border-radius:8px;padding:12px;">
-          <h3 style="margin:0 0 8px;color:#92400e;font-size:14px;">💬 Template 2: Plain Text</h3>
-          <form action="/save-text-template?page=${esc(page.pageId)}" method="POST" style="margin:0;">
-            <textarea name="textTemplate" placeholder="e.g. Hello! Where are you from? 💕" style="width:100%;min-height:80px;padding:7px 9px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;font-family:inherit;resize:vertical;background:#fff;">${esc(page.textTemplate || '')}</textarea>
-            <button type="submit" class="btn" style="background:#92400e;width:100%;margin-top:6px;">💾 Save Text</button>
+          <h3 style="margin:0 0 8px;color:#92400e;font-size:14px;">Template 2: Plain Text</h3>
+          <form action="/save-text-template?page=${pid}" method="POST" style="margin:0;">
+            <textarea name="textTemplate" placeholder="e.g. Hello! Where are you from?" style="width:100%;min-height:80px;padding:7px 9px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;font-family:inherit;resize:vertical;background:#fff;">${esc(page.textTemplate || '')}</textarea>
+            <button type="submit" class="btn" style="background:#92400e;width:100%;margin-top:6px;">Save Text</button>
           </form>
-          <form action="/send-text-now?page=${esc(page.pageId)}" method="POST" style="margin:6px 0 0;">
-            <button type="submit" class="btn btn-green" style="display:block;text-align:center;margin:0;width:100%;" onclick="return confirm('Send TEXT to ${fans.length} fans now?')">🚀 Send Text to All</button>
+          <form action="/send-text-now?page=${pid}" method="POST" style="margin:6px 0 0;">
+            <button type="submit" class="btn btn-green" style="display:block;text-align:center;margin:0;width:100%;" onclick="return confirm('Send TEXT to ${fans.length} fans now?')">Send Text to All</button>
           </form>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <h2>📅 Schedule</h2>
-      <form action="/update-schedule?page=${esc(page.pageId)}" method="POST">
+      <h2>Schedule</h2>
+      <form action="/update-schedule?page=${pid}" method="POST">
         <div class="row">
           <div><label>Daily Broadcast Time (HH:MM)</label><input name="broadcastTime" value="${esc(page.broadcastTime)}"/></div>
           <div><label>Timezone</label><input name="timezone" value="${esc(page.timezone)}"/></div>
@@ -2333,106 +2386,106 @@ function renderPageView(page, req) {
           <div>
             <label>Daily Auto-Broadcast</label>
             <select name="broadcastEnabled">
-              <option value="true" ${page.broadcastEnabled ? 'selected' : ''}>✅ Enabled</option>
-              <option value="false" ${!page.broadcastEnabled ? 'selected' : ''}>⏸️ Paused</option>
+              <option value="true" ${page.broadcastEnabled ? 'selected' : ''}>Enabled</option>
+              <option value="false" ${!page.broadcastEnabled ? 'selected' : ''}>Paused</option>
             </select>
           </div>
         </div>
         <div class="row">
           <div>
-            <label>🧹 Auto-Cleanup Threshold</label>
+            <label>Auto-Cleanup Threshold</label>
             <select name="cleanupThreshold">
-              <option value="0" ${page.cleanupThreshold === 0 ? 'selected' : ''}>0 — Disabled (never remove fans)</option>
-              <option value="1" ${(page.cleanupThreshold === undefined || page.cleanupThreshold === 1) ? 'selected' : ''}>1 — Remove on 1st failure</option>
-              <option value="2" ${page.cleanupThreshold === 2 ? 'selected' : ''}>2 — Remove after 2 consecutive failures</option>
-              <option value="3" ${page.cleanupThreshold === 3 ? 'selected' : ''}>3 — Remove after 3 in a row</option>
-              <option value="5" ${page.cleanupThreshold === 5 ? 'selected' : ''}>5 — Very safe</option>
-              <option value="10" ${page.cleanupThreshold === 10 ? 'selected' : ''}>10 — Almost never remove</option>
+              <option value="0" ${page.cleanupThreshold === 0 ? 'selected' : ''}>0 - Disabled</option>
+              <option value="1" ${(page.cleanupThreshold === undefined || page.cleanupThreshold === 1) ? 'selected' : ''}>1 - Remove on 1st failure</option>
+              <option value="2" ${page.cleanupThreshold === 2 ? 'selected' : ''}>2 - Remove after 2 failures</option>
+              <option value="3" ${page.cleanupThreshold === 3 ? 'selected' : ''}>3 - Remove after 3 failures</option>
+              <option value="5" ${page.cleanupThreshold === 5 ? 'selected' : ''}>5 - Very safe</option>
+              <option value="10" ${page.cleanupThreshold === 10 ? 'selected' : ''}>10 - Almost never remove</option>
             </select>
           </div>
           <div></div>
         </div>
-        <button type="submit" class="btn btn-green">💾 Save Schedule</button>
+        <button type="submit" class="btn btn-green">Save Schedule</button>
       </form>
     </div>
 
     <div class="card">
-      <h2>🖼️ Photos</h2>
+      <h2>Photos</h2>
       <div class="photo-grid">${photosHtml}</div>
-      <form action="/add-photo?page=${esc(page.pageId)}" method="POST" style="margin-top:14px;">
+      <form action="/add-photo?page=${pid}" method="POST" style="margin-top:14px;">
         <label>Add Photo URL</label>
         <input name="photoUrl" placeholder="https://i.imgur.com/..."/>
-        <button type="submit" class="btn btn-blue">➕ Add Photo</button>
+        <button type="submit" class="btn btn-blue">Add Photo</button>
       </form>
     </div>
 
     ${renderPageLibrarySection(page)}
 
     <div class="card">
-      <h2>📣 Broadcasts</h2>
+      <h2>Broadcasts</h2>
       <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px;margin-bottom:14px;">
-        <h3 style="margin-top:0;color:#92400e;">🧪 Test Send to Specific PSID</h3>
-        <form action="/test-send?page=${esc(page.pageId)}" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <h3 style="margin-top:0;color:#92400e;">Test Send to Specific PSID</h3>
+        <form action="/test-send?page=${pid}" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
           <div style="flex:1;min-width:200px;"><label>PSID</label><input name="psid" placeholder="e.g. 1234567890" required/></div>
-          <button type="submit" class="btn btn-orange" style="margin-top:0;">🧪 Send Test</button>
+          <button type="submit" class="btn btn-orange" style="margin-top:0;">Send Test</button>
         </form>
       </div>
-      <p style="font-size:13px;color:#6b7280;">Send to ALL ${fans.length} fans, spaced <strong>${page.spacingSeconds || 10}s</strong> apart. Est. time: <strong>~${Math.ceil(fans.length * (page.spacingSeconds || 10) / 60)} min</strong>.</p>
-      <a href="/send-now?page=${esc(page.pageId)}" class="btn btn-green" onclick="return confirm('Send to ${fans.length} fans now?')">🚀 Send Now</a>
+      <p style="font-size:13px;color:#6b7280;">Send to ALL ${fans.length} fans, spaced <strong>${page.spacingSeconds || 10}s</strong> apart. Est. ~${Math.ceil(fans.length * (page.spacingSeconds || 10) / 60)} min.</p>
+      <a href="/send-now?page=${pid}" class="btn btn-green" onclick="return confirm('Send to ${fans.length} fans now?')">Send Now</a>
       <h3>Custom Broadcast</h3>
-      <form action="/send-custom?page=${esc(page.pageId)}" method="POST">
+      <form action="/send-custom?page=${pid}" method="POST">
         <label>Photo URL (optional)</label>
         <input name="photo" placeholder="${esc(page.currentPhoto || '')}"/>
-        <button type="submit" class="btn btn-blue" onclick="return confirm('Send custom broadcast to ${fans.length} fans?')">📤 Send Custom</button>
+        <button type="submit" class="btn btn-blue" onclick="return confirm('Send custom broadcast to ${fans.length} fans?')">Send Custom</button>
       </form>
       <h3>Schedule One-Time</h3>
-      <form action="/schedule-once?page=${esc(page.pageId)}" method="POST">
+      <form action="/schedule-once?page=${pid}" method="POST">
         <label>Send at</label>
         <input name="scheduleTime" type="datetime-local"/>
-        <button type="submit" class="btn btn-blue">📅 Schedule</button>
+        <button type="submit" class="btn btn-blue">Schedule</button>
       </form>
     </div>
 
     <div class="card">
-      <h2>👥 Fan Management</h2>
+      <h2>Fan Management</h2>
       <div class="row">
         <div>
           <h3>Import from Facebook</h3>
-          <a href="/import-contacts?page=${esc(page.pageId)}" class="btn btn-blue">📥 Import All Contacts</a>
+          <a href="/import-contacts?page=${pid}" class="btn btn-blue">Import All Contacts</a>
         </div>
         <div>
           <h3>Export / Backup</h3>
-          <a href="/export-fans?page=${esc(page.pageId)}" class="btn btn-blue">💾 Export Fan List</a>
+          <a href="/export-fans?page=${pid}" class="btn btn-blue">Export Fan List</a>
         </div>
       </div>
       <h3>Bulk Import</h3>
-      <form action="/bulk-add-fans?page=${esc(page.pageId)}" method="POST">
+      <form action="/bulk-add-fans?page=${pid}" method="POST">
         <label>Paste PSIDs (one per line or comma-separated)</label>
-        <textarea name="psids" placeholder="1234567890&#10;9876543210"></textarea>
-        <button type="submit" class="btn btn-green">📤 Bulk Import</button>
+        <textarea name="psids" placeholder="1234567890"></textarea>
+        <button type="submit" class="btn btn-green">Bulk Import</button>
       </form>
       <h3>Manual</h3>
-      <form action="/add-fan?page=${esc(page.pageId)}" method="POST" style="margin-bottom:10px;">
+      <form action="/add-fan?page=${pid}" method="POST" style="margin-bottom:10px;">
         <label>Add single PSID</label>
         <input name="psid"/>
-        <button type="submit" class="btn btn-green">➕ Add Fan</button>
+        <button type="submit" class="btn btn-green">Add Fan</button>
       </form>
-      <form action="/set-baseline?page=${esc(page.pageId)}" method="POST" style="margin-bottom:10px;">
+      <form action="/set-baseline?page=${pid}" method="POST" style="margin-bottom:10px;">
         <label>Set Baseline</label>
         <input name="value" type="number" value="${page.baselineFans || 0}"/>
-        <button type="submit" class="btn btn-orange">📌 Set Baseline</button>
+        <button type="submit" class="btn btn-orange">Set Baseline</button>
       </form>
-      <a href="/clear-fans?page=${esc(page.pageId)}" class="btn btn-red" onclick="return confirm('CLEAR all ${fans.length} fans? Export first!')">🗑️ Clear All Fans</a>
-      <form action="/reset-stats?page=${esc(page.pageId)}" method="POST" style="margin-top:10px;">
-        <button type="submit" class="btn" style="background:#dc2626;color:#fff;" onclick="return confirm('Reset stats for ${esc(page.label)}? Fans kept.')">📊 Reset Stats (keep fans)</button>
+      <a href="/clear-fans?page=${pid}" class="btn btn-red" onclick="return confirm('CLEAR all ${fans.length} fans? Export first!')">Clear All Fans</a>
+      <form action="/reset-stats?page=${pid}" method="POST" style="margin-top:10px;">
+        <button type="submit" class="btn" style="background:#dc2626;color:#fff;" onclick="return confirm('Reset stats? Fans kept.')">Reset Stats (keep fans)</button>
       </form>
     </div>
 
     <div class="card danger-zone">
-      <h2>⚠️ Danger Zone</h2>
+      <h2>Danger Zone</h2>
       <form action="/remove-page" method="POST" style="display:inline;">
-        <input type="hidden" name="pageId" value="${esc(page.pageId)}"/>
-        <button type="submit" class="btn btn-red" onclick="return confirm('REMOVE page ${esc(page.label)} from messagebot? Fans + stats deleted.')">🗑️ Remove This Page</button>
+        <input type="hidden" name="pageId" value="${pid}"/>
+        <button type="submit" class="btn btn-red" onclick="return confirm('REMOVE page ${esc(page.label)}? Fans + stats deleted.')">Remove This Page</button>
       </form>
     </div>
   </div></body></html>`;
@@ -2496,6 +2549,21 @@ app.post('/add-page', (req, res) => {
 app.post('/remove-page', (req, res) => {
   if (req.body.pageId) removePage(req.body.pageId);
   res.redirect('/?removed=1');
+});
+
+// Reorder pages — saves new order from drag & drop
+app.post('/pages-reorder', (req, res) => {
+  const order = req.body.order;
+  if (!Array.isArray(order) || !order.length) return res.json({ ok: false, error: 'No order provided' });
+  const pages = loadPages();
+  // Build a map for quick lookup
+  const pageMap = {};
+  pages.forEach(p => { pageMap[p.pageId] = p; });
+  // Reorder: put pages in the new order, append any missing ones at the end
+  const reordered = order.filter(id => pageMap[id]).map(id => pageMap[id]);
+  const missing = pages.filter(p => !order.includes(p.pageId));
+  savePages([...reordered, ...missing]);
+  res.json({ ok: true });
 });
 
 app.post('/toggle-page', (req, res) => {
