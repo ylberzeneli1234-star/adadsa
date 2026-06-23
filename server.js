@@ -1469,19 +1469,65 @@ function renderTemplateManager(req) {
         var raw = document.getElementById('f-rawrow').value || '';
         if (!raw.trim()) { alert('Paste a row first.'); return; }
         var TAB = String.fromCharCode(9), NL = String.fromCharCode(10);
-        var line = raw.split(NL)[0]; var c = line.split(TAB);
-        function cell(i){ return (c[i] || '').trim(); }
-        if (cell(0)) document.getElementById('f-title').value = cell(0);
-        if (cell(1)) document.getElementById('f-subtitle').value = cell(1);
-        if (cell(3)) document.getElementById('f-button').value = cell(3);
-        if (cell(2) && cell(2).indexOf('http') === 0) { formPhotos.push(cell(2)); renderPhotoGrid(); }
-        var scrollUrl = '', viralUrl = '';
-        for (var i = 0; i < c.length; i++) { var v = (c[i] || '').trim(); if (v.indexOf('http') === 0) { if (v.indexOf('theviralbox') !== -1) viralUrl = v; else if (v.indexOf('scrollgallery') !== -1) scrollUrl = v; } }
+        var line = raw.split(NL)[0];
+        var cells = line.split(TAB).map(function(c){ return c.trim(); }).filter(function(c){ return c.length > 0; });
+
+        var imgurUrls = [];
+        var scrollUrl = '';
+        var viralUrl = '';
+        var textCells = [];
+
+        cells.forEach(function(v) {
+          if (!v) return;
+          if (v.indexOf('http') === 0) {
+            // imgur photo
+            if (v.indexOf('imgur.com') !== -1) {
+              // normalize: ensure it has an extension
+              var url = v;
+              if (!/\.(jpg|jpeg|png|gif|webp)$/i.test(url)) url = url + '.png';
+              if (!imgurUrls.includes(url)) imgurUrls.push(url);
+            }
+            // redirect URLs
+            else if (v.indexOf('theviralbox') !== -1) { viralUrl = v; }
+            else if (v.indexOf('scrollgallery') !== -1) { scrollUrl = v; }
+            // other URLs ignored
+          } else {
+            // plain text cell — could be title, subtitle, or button
+            textCells.push(v);
+          }
+        });
+
+        // Text cells: title = first, subtitle = second, button = last (if 3+ text cells)
+        if (textCells[0]) document.getElementById('f-title').value = textCells[0];
+        if (textCells[1]) document.getElementById('f-subtitle').value = textCells[1];
+        if (textCells.length >= 3) document.getElementById('f-button').value = textCells[textCells.length - 1];
+
+        // Add ALL imgur photos found
+        if (imgurUrls.length > 0) {
+          imgurUrls.forEach(function(u) {
+            if (!formPhotos.includes(u)) formPhotos.push(u);
+          });
+          renderPhotoGrid();
+        }
+
+        // Set redirect URL
         var setSel = document.getElementById('f-set');
         var redirect = (setSel.value === 'TheViralBox' && viralUrl) ? viralUrl : (scrollUrl || viralUrl);
-        if (redirect) document.getElementById('f-redirect').value = redirect;
-        if (redirect && redirect.indexOf('theviralbox') !== -1) setSel.value = 'TheViralBox';
-        else if (redirect && redirect.indexOf('scrollgallery') !== -1) setSel.value = 'Scrollgallery';
+        if (redirect) {
+          document.getElementById('f-redirect').value = redirect;
+          if (redirect.indexOf('theviralbox') !== -1) setSel.value = 'TheViralBox';
+          else if (redirect.indexOf('scrollgallery') !== -1) setSel.value = 'Scrollgallery';
+        }
+
+        // Show summary
+        var summary = [];
+        if (imgurUrls.length > 0) summary.push(imgurUrls.length + ' photo(s) found');
+        if (redirect) summary.push('redirect: ' + redirect.replace('https://', '').replace('http://', '').slice(0, 40));
+        if (summary.length) {
+          var info = document.getElementById('f-rawrow');
+          info.style.borderColor = '#16a34a';
+          setTimeout(function(){ info.style.borderColor = ''; }, 2000);
+        }
       }
       function editTmpl(id) {
         var t = getTmpl(id); if (!t) return;
