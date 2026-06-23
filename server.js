@@ -2053,6 +2053,107 @@ function renderAllPagesView(pages, req) {
 
     ${renderLibraryManager()}
 
+    <div class="card" style="border:2px solid #bbf7d0;">
+      <h2>📋 Bulk Add Pages — Paste from Spreadsheet</h2>
+      <p style="color:#6b7280;font-size:13px;">Paste one or more rows directly from your spreadsheet. Each row: <strong>Name [tab] Page ID [tab] Token</strong> — columns can be in any order, the system auto-detects which is which. One row per line.</p>
+      <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#166534;">
+        <strong>Example format (tab-separated):</strong><br/>
+        <code style="font-size:11px;background:#dcfce7;padding:2px 6px;border-radius:4px;">Rebecca&nbsp;&nbsp;&nbsp;&nbsp;844231325433338&nbsp;&nbsp;&nbsp;&nbsp;EAAZABJsK508YBR...</code>
+      </div>
+      <textarea id="bulk-pages-input" placeholder="Paste your rows here (Name TAB PageID TAB Token)&#10;Rebecca	844231325433338	EAAZABJsK508...&#10;Sandra	109876543210123	EAAZABother..." style="width:100%;min-height:140px;font-family:monospace;font-size:12px;padding:10px;border:1px solid #86efac;border-radius:8px;resize:vertical;"></textarea>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-green" onclick="parseBulkPages()" style="margin-top:0;">🔍 Preview Pages</button>
+        <button type="button" id="bulk-add-btn" class="btn" style="background:#16a34a;color:#fff;display:none;margin-top:0;" onclick="submitBulkPages()">➕ Add All Pages</button>
+        <span id="bulk-status" style="font-size:13px;font-weight:600;"></span>
+      </div>
+      <div id="bulk-preview" style="margin-top:12px;"></div>
+    </div>
+
+    <script>
+      var bulkParsed = [];
+      function parseBulkPages() {
+        var raw = document.getElementById('bulk-pages-input').value || '';
+        var lines = raw.split('\n').map(function(l){ return l.replace(/\r/g,'').trim(); }).filter(function(l){ return l.length > 0; });
+        bulkParsed = [];
+        var errors = [];
+        lines.forEach(function(line, idx) {
+          var cols = line.split('\t').map(function(c){ return c.trim(); }).filter(function(c){ return c.length > 0; });
+          if (cols.length < 2) { errors.push('Row '+(idx+1)+': needs at least 2 columns (got '+cols.length+')'); return; }
+          var name = '', pageId = '', token = '';
+          cols.forEach(function(c) {
+            if (/^EAA/i.test(c)) token = c;
+            else if (/^\d{8,}$/.test(c)) pageId = c;
+            else if (!name) name = c;
+          });
+          if (!pageId) { errors.push('Row '+(idx+1)+': no Page ID found (should be a long number) in: '+line.slice(0,60)); return; }
+          if (!token) { errors.push('Row '+(idx+1)+': no Token found (should start with EAA) in: '+line.slice(0,60)); return; }
+          if (!name) name = 'Page ' + pageId;
+          bulkParsed.push({ name: name, pageId: pageId, token: token });
+        });
+        var preview = document.getElementById('bulk-preview');
+        var status = document.getElementById('bulk-status');
+        var addBtn = document.getElementById('bulk-add-btn');
+        if (bulkParsed.length === 0 && errors.length === 0) {
+          status.style.color = '#92400e'; status.textContent = 'Nothing found — check format';
+          preview.innerHTML = ''; addBtn.style.display = 'none'; return;
+        }
+        var rows = bulkParsed.map(function(p, i) {
+          return '<tr style="background:'+(i%2===0?'#f9fafb':'#fff')+'">'
+            + '<td style="padding:7px 10px;font-weight:600;">'+escHtml(p.name)+'</td>'
+            + '<td style="padding:7px 10px;font-family:monospace;font-size:12px;color:#6b7280;">'+escHtml(p.pageId)+'</td>'
+            + '<td style="padding:7px 10px;font-family:monospace;font-size:11px;color:#16a34a;">'+escHtml(p.token.slice(0,16))+'...'+escHtml(p.token.slice(-6))+'</td>'
+            + '</tr>';
+        }).join('');
+        var errHtml = errors.length ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:8px 12px;margin-top:8px;font-size:12px;color:#dc2626;">'
+          + errors.map(function(e){ return '<div>&#10060; '+escHtml(e)+'</div>'; }).join('') + '</div>' : '';
+        preview.innerHTML = '<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">'
+          + '<thead><tr style="background:#f0fdf4;"><th style="padding:8px 10px;text-align:left;font-size:12px;color:#166534;">Name</th>'
+          + '<th style="padding:8px 10px;text-align:left;font-size:12px;color:#166534;">Page ID</th>'
+          + '<th style="padding:8px 10px;text-align:left;font-size:12px;color:#166534;">Token</th></tr></thead>'
+          + '<tbody>'+rows+'</tbody></table>' + errHtml;
+        if (bulkParsed.length > 0) {
+          status.style.color = '#166534';
+          status.textContent = bulkParsed.length + ' page(s) ready to add' + (errors.length ? ' (' + errors.length + ' row(s) skipped)' : '');
+          addBtn.style.display = 'inline-block';
+          addBtn.textContent = 'Add ' + bulkParsed.length + ' Pages';
+        } else {
+          status.style.color = '#dc2626'; status.textContent = errors.length + ' error(s) — check format';
+          addBtn.style.display = 'none';
+        }
+      }
+      function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+      function submitBulkPages() {
+        if (!bulkParsed.length) return;
+        var btn = document.getElementById('bulk-add-btn');
+        var status = document.getElementById('bulk-status');
+        btn.disabled = true; btn.textContent = 'Adding...';
+        status.style.color = '#6b7280'; status.textContent = 'Adding pages...';
+        fetch('/bulk-add-pages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pages: bulkParsed })
+        })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if (d.ok) {
+            status.style.color = '#16a34a';
+            status.textContent = d.added + ' added, ' + d.skipped + ' skipped (already existed)';
+            btn.style.display = 'none';
+            document.getElementById('bulk-pages-input').value = '';
+            document.getElementById('bulk-preview').innerHTML = '';
+            bulkParsed = [];
+          } else {
+            status.style.color = '#dc2626'; status.textContent = 'Error: ' + (d.error || 'unknown');
+            btn.disabled = false; btn.textContent = 'Add ' + bulkParsed.length + ' Pages';
+          }
+        })
+        .catch(function(e){
+          status.style.color = '#dc2626'; status.textContent = 'Error: ' + e.message;
+          btn.disabled = false;
+        });
+      }
+    </script>
+
     <div class="card">
       <h2>➕ Add New Page</h2>
       <p style="color:#6b7280;font-size:13px;">New pages default to: ⏸️ Broadcast Paused · 🛡️ Auto-cleanup Disabled. Enable them manually after setup.</p>
@@ -2518,6 +2619,28 @@ app.get('/', (req, res) => {
 // ============================================
 // PAGE MANAGEMENT
 // ============================================
+// Bulk add pages from paste
+app.post('/bulk-add-pages', (req, res) => {
+  const pages = req.body.pages;
+  if (!Array.isArray(pages) || !pages.length) return res.json({ ok: false, error: 'No pages provided' });
+  let added = 0, skipped = 0;
+  pages.forEach(p => {
+    if (!p.pageId || !p.token) { skipped++; return; }
+    const result = addPage({
+      pageId: String(p.pageId).trim(),
+      accessToken: String(p.token).trim(),
+      label: (p.name || '').trim() || `Page ${p.pageId}`
+    });
+    if (result) {
+      added++;
+      try { setupMessenger(result); } catch {}
+    } else {
+      skipped++; // already exists
+    }
+  });
+  res.json({ ok: true, added, skipped });
+});
+
 app.post('/add-page', (req, res) => {
   const b = req.body;
   if (!b.pageId || !b.accessToken) {
