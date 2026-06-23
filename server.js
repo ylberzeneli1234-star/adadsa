@@ -1826,9 +1826,21 @@ function renderAllPagesView(pages, req) {
         // Classify every cell by type
         var tokens = [], pageIds = [], names = [];
         allCells.forEach(function(c) {
-          if (/^EAA/i.test(c)) tokens.push(c);
-          else if (/^\d{8,}$/.test(c)) pageIds.push(c);
-          else names.push(c);
+          if (/^EAA/i.test(c)) {
+            tokens.push(c);
+          } else if (/^\d{8,}$/.test(c)) {
+            pageIds.push(c);
+          } else {
+            // Cell might be "Pleasant meetings 806249852577059" (space-separated)
+            var numMatch = c.match(/\b(\d{8,})\b/);
+            if (numMatch) {
+              pageIds.push(numMatch[1]);
+              var namepart = c.replace(numMatch[1], '').trim();
+              if (namepart) names.push(namepart);
+            } else {
+              names.push(c);
+            }
+          }
         });
 
         // Match by position: pageIds[0]+tokens[0]+names[0] = page 1, etc.
