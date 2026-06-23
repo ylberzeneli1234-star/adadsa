@@ -1470,25 +1470,32 @@ function renderTemplateManager(req) {
         if (!raw.trim()) { alert('Paste a row first.'); return; }
         var TAB = String.fromCharCode(9), NL = String.fromCharCode(10), CR = String.fromCharCode(13);
 
-        // Split by BOTH tabs and newlines — handles long rows that wrap in the textarea
-        // or spreadsheets that paste with line breaks between cells
-        var cells = raw.replace(new RegExp(CR, 'g'), '').split(new RegExp('[' + TAB + NL + ']'))
+        // Split by tabs AND newlines — handles long rows that wrap
+        var cells = raw.replace(new RegExp(CR,'g'),'').split(new RegExp('['+TAB+NL+']'))
           .map(function(c){ return c.trim(); })
           .filter(function(c){ return c.length > 0; });
 
-        var imgurUrls = [];
-        var scrollUrl = '';
-        var viralUrl = '';
+        var imgurById = {};  // id -> full url  (dedup by image ID not full string)
+        var imgurOrder = []; // to preserve order
+        var scrollUrl = '', viralUrl = '';
         var textCells = [];
 
         cells.forEach(function(v) {
           if (!v) return;
-          if (v.indexOf('http') === 0 || v.indexOf('https') === 0) {
+          if (v.indexOf('http') === 0) {
             if (v.indexOf('imgur.com') !== -1) {
-              // Normalize: ensure it has an image extension
-              var url = v;
-              if (!/\.(jpg|jpeg|png|gif|webp)$/i.test(url)) url = url + '.png';
-              if (!imgurUrls.includes(url)) imgurUrls.push(url);
+              // Extract imgur image ID (e.g. "LFAlEEp" from "https://i.imgur.com/LFAlEEp.jpeg")
+              var m = (new RegExp('imgur\\.com\\/([A-Za-z0-9]+)(?:\\.[a-zA-Z]+)?')).exec(v);
+              if (m) {
+                var imgId = m[1];
+                if (!imgurById[imgId]) {
+                  // Use original URL but ensure it has an extension
+                  var url = v.split('?')[0].split('#')[0]; // strip query/hash
+                  if (!(new RegExp('\\.(jpg|jpeg|png|gif|webp)$','i')).test(url)) url = url + '.jpeg';
+                  imgurById[imgId] = url;
+                  imgurOrder.push(imgId);
+                }
+              }
             }
             else if (v.indexOf('theviralbox') !== -1) { if (!viralUrl) viralUrl = v; }
             else if (v.indexOf('scrollgallery') !== -1) { if (!scrollUrl) scrollUrl = v; }
@@ -1497,20 +1504,20 @@ function renderTemplateManager(req) {
           }
         });
 
-        // Text cells: title = first, subtitle = second, button = last (if 3+ text cells)
+        var imgurUrls = imgurOrder.map(function(id){ return imgurById[id]; });
+
+        // Fill text fields
         if (textCells[0]) document.getElementById('f-title').value = textCells[0];
         if (textCells[1]) document.getElementById('f-subtitle').value = textCells[1];
         if (textCells.length >= 3) document.getElementById('f-button').value = textCells[textCells.length - 1];
 
-        // Add ALL imgur photos found
-        if (imgurUrls.length > 0) {
-          imgurUrls.forEach(function(u) {
-            if (!formPhotos.includes(u)) formPhotos.push(u);
-          });
-          renderPhotoGrid();
-        }
+        // Add all imgur photos
+        imgurUrls.forEach(function(u) {
+          if (!formPhotos.includes(u)) formPhotos.push(u);
+        });
+        if (imgurUrls.length > 0) renderPhotoGrid();
 
-        // Set redirect URL and website selector
+        // Set redirect
         var setSel = document.getElementById('f-set');
         var redirect = (setSel.value === 'TheViralBox' && viralUrl) ? viralUrl : (scrollUrl || viralUrl);
         if (redirect) {
@@ -1519,17 +1526,22 @@ function renderTemplateManager(req) {
           else if (redirect.indexOf('scrollgallery') !== -1) setSel.value = 'Scrollgallery';
         }
 
-        // Visual feedback — green border flash + summary
-        var box = document.getElementById('f-rawrow');
-        box.style.borderColor = '#16a34a';
-        box.style.borderWidth = '2px';
-        setTimeout(function(){ box.style.borderColor = ''; box.style.borderWidth = ''; }, 2000);
-
+        // Show visible summary below button
+        var summary = document.getElementById('f-row-summary');
+        if (!summary) {
+          summary = document.createElement('div');
+          summary.id = 'f-row-summary';
+          summary.style.cssText = 'margin-top:8px;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:600;';
+          document.getElementById('f-rawrow').parentNode.appendChild(summary);
+        }
         var parts = [];
-        if (imgurUrls.length) parts.push(imgurUrls.length + ' photo(s)');
-        if (redirect) parts.push('redirect set');
-        if (textCells[0]) parts.push('title: ' + textCells[0].slice(0, 20));
-        if (parts.length) console.log('fillFromRow:', parts.join(', '));
+        if (imgurUrls.length) parts.push('📸 ' + imgurUrls.length + ' photo(s) found: ' + imgurOrder.join(', '));
+        if (redirect) parts.push('🔗 redirect: ' + redirect.replace('https://','').slice(0,40));
+        if (textCells[0]) parts.push('📝 title: ' + textCells[0]);
+        if (textCells.length >= 3) parts.push('🔘 button: ' + textCells[textCells.length-1]);
+        summary.style.background = imgurUrls.length ? '#dcfce7' : '#fef9c3';
+        summary.style.color = imgurUrls.length ? '#166534' : '#854d0e';
+        summary.innerHTML = parts.length ? parts.join('<br/>') : '⚠️ Nothing recognized — check format';
       }
       function editTmpl(id) {
         var t = getTmpl(id); if (!t) return;
