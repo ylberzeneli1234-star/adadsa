@@ -1816,35 +1816,56 @@ function renderAllPagesView(pages, req) {
       var bulkParsed = [];
       function parseBulkPages() {
         var raw = document.getElementById('bulk-pages-input').value || '';
-        var lines = raw.split('\n').map(function(l){ return l.replace(/\r/g,'').trim(); }).filter(function(l){ return l.length > 0; });
+        if (!raw.trim()) { return; }
+
+        // Split ALL content by both tabs and newlines — handles any paste format
+        // (name+ID on one line, token on next, or all on same line, etc.)
+        var allCells = raw.replace(/\r/g,'').split(/[\t\n]/)
+          .map(function(c){ return c.trim(); })
+          .filter(function(c){ return c.length > 0; });
+
+        // Classify every cell by type
+        var tokens = [], pageIds = [], names = [];
+        allCells.forEach(function(c) {
+          if (/^EAA/i.test(c)) tokens.push(c);
+          else if (/^\d{8,}$/.test(c)) pageIds.push(c);
+          else names.push(c);
+        });
+
+        // Match by position: pageIds[0]+tokens[0]+names[0] = page 1, etc.
         bulkParsed = [];
         var errors = [];
-        lines.forEach(function(line, idx) {
-          var cols = line.split('\t').map(function(c){ return c.trim(); }).filter(function(c){ return c.length > 0; });
-          if (cols.length < 2) { errors.push('Row '+(idx+1)+': needs at least 2 columns'); return; }
-          var name = '', pageId = '', token = '';
-          cols.forEach(function(c) {
-            if (/^EAA/i.test(c)) token = c;
-            else if (/^\d{8,}$/.test(c)) pageId = c;
-            else if (!name) name = c;
-          });
-          if (!pageId) { errors.push('Row '+(idx+1)+': no Page ID found (long number)'); return; }
-          if (!token) { errors.push('Row '+(idx+1)+': no Token found (starts with EAA)'); return; }
-          if (!name) name = 'Page ' + pageId;
-          bulkParsed.push({ name: name, pageId: pageId, token: token });
-        });
+        var count = Math.max(tokens.length, pageIds.length);
+        if (count === 0) {
+          document.getElementById('bulk-status').style.color='#92400e';
+          document.getElementById('bulk-status').textContent='Nothing recognized — need Page ID (long number) and Token (starts with EAA)';
+          document.getElementById('bulk-preview').innerHTML='';
+          document.getElementById('bulk-add-btn').style.display='none';
+          return;
+        }
+        for (var i = 0; i < count; i++) {
+          if (!pageIds[i]) { errors.push('Entry '+(i+1)+': missing Page ID'); continue; }
+          if (!tokens[i]) { errors.push('Entry '+(i+1)+': missing Token (EAA...)'); continue; }
+          bulkParsed.push({ name: names[i] || 'Page '+pageIds[i], pageId: pageIds[i], token: tokens[i] });
+        }
+
         var preview = document.getElementById('bulk-preview');
         var status = document.getElementById('bulk-status');
         var addBtn = document.getElementById('bulk-add-btn');
-        if (!bulkParsed.length && !errors.length) { preview.innerHTML=''; addBtn.style.display='none'; status.textContent=''; return; }
+
         var rows = bulkParsed.map(function(p,i){
           return '<tr style="background:'+(i%2===0?'#f9fafb':'#fff')+'">'
             +'<td style="padding:5px 8px;font-weight:600;font-size:13px;">'+escHtml(p.name)+'</td>'
             +'<td style="padding:5px 8px;font-family:monospace;font-size:11px;color:#6b7280;">'+escHtml(p.pageId)+'</td>'
-            +'<td style="padding:5px 8px;font-family:monospace;font-size:11px;color:#16a34a;">'+escHtml(p.token.slice(0,14))+'...'+'</td>'
+            +'<td style="padding:5px 8px;font-family:monospace;font-size:11px;color:#16a34a;">'+escHtml(p.token.slice(0,14))+'...</td>'
             +'</tr>';
         }).join('');
-        var errHtml = errors.length ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:6px 10px;margin-top:6px;font-size:12px;color:#dc2626;">'+errors.map(function(e){ return '<div>&#10060; '+escHtml(e)+'</div>'; }).join('')+'</div>' : '';
+
+        var errHtml = errors.length
+          ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:6px 10px;margin-top:6px;font-size:12px;color:#dc2626;">'
+            +errors.map(function(e){ return '<div>&#10060; '+escHtml(e)+'</div>'; }).join('')+'</div>'
+          : '';
+
         preview.innerHTML = bulkParsed.length
           ? '<div style="background:#fff;border-radius:8px;border:1px solid #86efac;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06);">'
             +'<table style="width:100%;border-collapse:collapse;"><thead><tr style="background:#f0fdf4;">'
@@ -1853,11 +1874,15 @@ function renderAllPagesView(pages, req) {
             +'<th style="padding:6px 8px;text-align:left;font-size:11px;color:#166534;">Token</th>'
             +'</tr></thead><tbody>'+rows+'</tbody></table></div>'+errHtml
           : errHtml;
+
         if (bulkParsed.length > 0) {
-          status.style.color='#16a34a'; status.textContent=bulkParsed.length+' ready'+(errors.length?' ('+errors.length+' skipped)':'');
-          addBtn.style.display='inline-block'; addBtn.textContent='➕ Add '+bulkParsed.length;
+          status.style.color='#16a34a';
+          status.textContent=bulkParsed.length+' ready'+(errors.length?' ('+errors.length+' skipped)':'');
+          addBtn.style.display='inline-block';
+          addBtn.textContent='Add '+bulkParsed.length;
         } else {
-          status.style.color='#dc2626'; status.textContent=errors.length+' error(s)';
+          status.style.color='#dc2626';
+          status.textContent=errors.length+' error(s) — check format';
           addBtn.style.display='none';
         }
       }
