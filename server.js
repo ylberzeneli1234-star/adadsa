@@ -1255,22 +1255,30 @@ function renderLibraryManager() {
   }).join('');
 
   return `
-    <div class="card" style="border:2px solid #ede9fe;">
-      <h2>🗂️ Shared Library</h2>
-      <div style="margin-top:16px;">
-        <h3 style="margin:0 0 8px;font-size:14px;">📸 Shared Photos (${lib.photos.length})</h3>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;margin-bottom:10px;">
-          ${photoChips || '<span style="color:#94a3b8;font-size:12px;">No photos yet.</span>'}
+    <div class="card" style="border:2px solid #ede9fe;padding:0;overflow:hidden;">
+      <details>
+        <summary style="cursor:pointer;padding:14px 20px;display:flex;align-items:center;gap:10px;user-select:none;list-style:none;">
+          <span style="font-size:14px;color:#8b5cf6;transition:transform 0.2s;display:inline-block;" class="bp-arrow">▶</span>
+          <span style="font-size:16px;font-weight:700;color:#1a1d2e;">🗂️ Shared Library</span>
+          <span style="font-size:12px;color:#94a3b8;margin-left:4px;">${lib.photos.length} photos · ${Object.values(lib.redirectSets).reduce((a,s)=>a+s.length,0)} redirect URLs</span>
+        </summary>
+        <div style="padding:0 20px 20px;">
+          <div style="margin-top:16px;">
+            <h3 style="margin:0 0 8px;font-size:14px;">📸 Shared Photos (${lib.photos.length})</h3>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;margin-bottom:10px;">
+              ${photoChips || '<span style="color:#94a3b8;font-size:12px;">No photos yet.</span>'}
+            </div>
+            <form action="/library-add-photo" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+              <textarea name="photoUrls" placeholder="Paste one or more image URLs (one per line or comma-separated)" style="flex:1;min-width:260px;min-height:48px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:monospace;font-size:12px;"></textarea>
+              <button type="submit" class="btn btn-green" style="white-space:nowrap;">+ Add Photo(s)</button>
+            </form>
+          </div>
+          <div style="margin-top:20px;border-top:1px solid #f1f5f9;padding-top:16px;">
+            <h3 style="margin:0 0 4px;font-size:14px;">🔗 Redirect Sets</h3>
+            ${setSections}
+          </div>
         </div>
-        <form action="/library-add-photo" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
-          <textarea name="photoUrls" placeholder="Paste one or more image URLs (one per line or comma-separated)" style="flex:1;min-width:260px;min-height:48px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:monospace;font-size:12px;"></textarea>
-          <button type="submit" class="btn btn-green" style="white-space:nowrap;">+ Add Photo(s)</button>
-        </form>
-      </div>
-      <div style="margin-top:20px;border-top:1px solid #f1f5f9;padding-top:16px;">
-        <h3 style="margin:0 0 4px;font-size:14px;">🔗 Redirect Sets</h3>
-        ${setSections}
-      </div>
+      </details>
     </div>`;
 }
 
@@ -1759,13 +1767,7 @@ function renderAllPagesView(pages, req) {
     const clicksToday = (stats.clicks || []).filter(c => c.time.startsWith(todayStr)).length;
     const sent = stats.messagesSent || 0;
     const failed = stats.messagesFailed || 0;
-    const status = p.broadcastEnabled
-      ? `<span class="badge badge-green">Active</span>`
-      : `<span class="badge badge-gray">Paused</span>`;
     const sendNowOn = p.sendNowEnabled !== false;
-    const sendNowBadge = sendNowOn
-      ? `<span class="badge badge-green" style="font-size:9px;">SendNow ON</span>`
-      : `<span class="badge badge-gray" style="font-size:9px;">SendNow OFF</span>`;
     const groupBadge = p.group
       ? `<span class="group-badge">${esc(p.group)}</span>`
       : `<span class="group-badge unassigned">—</span>`;
@@ -1781,7 +1783,6 @@ function renderAllPagesView(pages, req) {
       <td>${fans.length}</td>
       <td>${clicksToday} / ${clicks}</td>
       <td style="white-space:nowrap;font-size:13px;">${sent} ✅ · ${failed} ❌</td>
-      <td>${status}<br/>${sendNowBadge}</td>
       <td><span class="bp-cell" data-bp="${esc(p.pageId)}" style="font-size:12px;color:#94a3b8;">—</span></td>
       <td>
         <div class="actions">
@@ -1934,7 +1935,7 @@ function renderAllPagesView(pages, req) {
           </div>
 
           <table>
-            <thead><tr><th style="width:28px;" title="Drag rows to reorder">⠿</th><th>Page / Group <span id="reorder-status" style="font-size:11px;font-weight:400;margin-left:8px;"></span></th><th>Fans</th><th>Clicks (today/total)</th><th>Messages</th><th>Status</th><th>Send Progress</th><th>Actions</th></tr></thead>
+            <thead><tr><th style="width:28px;" title="Drag rows to reorder">⠿</th><th>Page / Group <span id="reorder-status" style="font-size:11px;font-weight:400;margin-left:8px;"></span></th><th>Fans</th><th>Clicks (today/total)</th><th>Messages</th><th>Send Progress</th><th>Actions</th></tr></thead>
             <tbody id="pages-tbody">${rows}</tbody>
           </table>
 
