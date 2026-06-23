@@ -1369,7 +1369,7 @@ function renderTemplateManager(req) {
           <button type="button" class="btn btn-green" style="white-space:nowrap;" onclick="addPhotoToForm()">+ Add photo</button>
         </div>
         <div id="f-dropzone" style="margin-top:8px;border:2px dashed #cbd5e1;border-radius:8px;padding:14px;text-align:center;color:#94a3b8;font-size:13px;cursor:pointer;">📂 Drag &amp; drop a photo here (or click) to upload to Imgur</div>
-        <div id="f-photo-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin-top:10px;"></div>
+        <div id="f-photo-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-top:10px;"></div>
         <label style="margin-top:10px;display:block;">Redirect URL <span id="f-redirect-label" style="font-weight:400;color:#94a3b8;font-size:11px;"></span></label>
         <input name="redirect" id="f-redirect" placeholder="https://scrollgallery.com/?p=50328" style="width:100%;font-family:monospace;font-size:12px;"/>
         <div id="f-linked-block" style="display:none;margin-top:10px;background:#dcfce7;border:1px solid #86efac;border-radius:8px;padding:10px 12px;">
@@ -1434,15 +1434,15 @@ function renderTemplateManager(req) {
         var grid = document.getElementById('f-photo-grid');
         grid.innerHTML = formPhotos.map(function(u, i){
           var uid = 'pgurl_' + i;
-          return '<div style="border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;background:#fff;">'
-            + '<div style="position:relative;aspect-ratio:1/1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;">'
-            + '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;" onerror="imgFail(this)"/>'
-            + '<button type="button" class="pg-remove-btn" data-idx="'+i+'" style="position:absolute;top:3px;right:3px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;line-height:1;cursor:pointer;">\u00d7</button>'
+          return '<div style="border:2px solid #e2e8f0;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,0.06);">'
+            + '<div style="position:relative;aspect-ratio:1/1;background:#f1f5f9;">'
+            + '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="imgFail(this)"/>'
+            + '<button type="button" class="pg-remove-btn" data-idx="'+i+'" style="position:absolute;top:7px;right:7px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:28px;height:28px;font-size:16px;line-height:1;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.3);">\u00d7</button>'
+            + '<div style="position:absolute;bottom:7px;left:7px;background:rgba(0,0,0,0.55);color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:8px;">Photo '+(i+1)+'</div>'
             + '</div>'
-            + '<div style="padding:6px;background:#f8fafc;border-top:1px solid #e2e8f0;">'
-            + '<div style="font-size:10px;color:#6b7280;margin-bottom:4px;font-weight:600;">📎 Photo ' + (i+1) + ' URL</div>'
+            + '<div style="padding:8px;background:#f8fafc;border-top:1px solid #e2e8f0;">'
             + '<input id="'+uid+'" type="text" value="'+escAttr(u)+'" readonly style="width:100%;font-size:10px;font-family:monospace;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#1e40af;cursor:pointer;" title="Click to select full URL" onclick="this.select();"/>'
-            + '<button type="button" class="pg-copy-btn" data-uid="'+uid+'" style="width:100%;margin-top:4px;background:#6b7280;color:#fff;border:none;border-radius:4px;font-size:10px;font-weight:600;padding:4px;cursor:pointer;">📋 Copy URL</button>'
+            + '<button type="button" class="pg-copy-btn" data-uid="'+uid+'" style="width:100%;margin-top:5px;background:#6b7280;color:#fff;border:none;border-radius:5px;font-size:11px;font-weight:600;padding:5px;cursor:pointer;">📋 Copy URL</button>'
             + '</div>'
             + '</div>';
         }).join('') || '<span style="color:#94a3b8;font-size:12px;">No photos added yet.</span>';
