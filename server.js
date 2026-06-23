@@ -1752,7 +1752,6 @@ function renderTemplateManager(req) {
 function renderAllPagesView(pages, req) {
   const todayStr = new Date().toISOString().split('T')[0];
   const globalMode = getGlobalContentMode();
-  let agg = { fans: 0, clicks: 0, clicksToday: 0, sent: 0, failed: 0, delivered: 0, readers: 0 };
   const rows = pages.map(p => {
     const fans = loadFans(p.pageId);
     const stats = loadStats(p.pageId);
@@ -1760,15 +1759,6 @@ function renderAllPagesView(pages, req) {
     const clicksToday = (stats.clicks || []).filter(c => c.time.startsWith(todayStr)).length;
     const sent = stats.messagesSent || 0;
     const failed = stats.messagesFailed || 0;
-    const delivered = (stats.delivered || []).length;
-    const readers = (stats.readers || []).length;
-    agg.fans += fans.length;
-    agg.clicks += clicks;
-    agg.clicksToday += clicksToday;
-    agg.sent += sent;
-    agg.failed += failed;
-    agg.delivered += delivered;
-    agg.readers += readers;
     const status = p.broadcastEnabled
       ? `<span class="badge badge-green">Active</span>`
       : `<span class="badge badge-gray">Paused</span>`;
@@ -1808,19 +1798,94 @@ function renderAllPagesView(pages, req) {
     ${renderAlerts(req)}
     ${renderMasterRedirectBanner()}
 
-    <div class="card">
-      <h2>🌍 All Pages — Aggregate Stats</h2>
-      <div class="grid">
-        <div class="stat"><div class="v">${pages.length}</div><div class="l">Pages</div></div>
-        <div class="stat"><div class="v">${agg.fans}</div><div class="l">Total Fans</div></div>
-        <div class="stat"><div class="v">${agg.clicksToday}</div><div class="l">Clicks Today</div></div>
-        <div class="stat"><div class="v">${agg.clicks}</div><div class="l">Total Clicks</div></div>
-        <div class="stat"><div class="v">${agg.sent}</div><div class="l">Sent</div></div>
-        <div class="stat"><div class="v">${agg.failed}</div><div class="l">Failed</div></div>
-        <div class="stat"><div class="v">${agg.delivered}</div><div class="l">Delivered</div></div>
-        <div class="stat"><div class="v">${agg.readers}</div><div class="l">Seen By</div></div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+      <div style="background:#fff;border-radius:8px;padding:10px 18px;box-shadow:0 1px 3px rgba(0,0,0,0.06);display:flex;align-items:center;gap:10px;white-space:nowrap;">
+        <span style="font-size:28px;font-weight:800;color:#1a1d2e;">${pages.length}</span>
+        <span style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Pages</span>
+      </div>
+      <div style="flex:1;min-width:280px;background:#fff;border-radius:8px;padding:10px 14px;box-shadow:0 1px 3px rgba(0,0,0,0.06);display:flex;gap:8px;align-items:center;">
+        <textarea id="bulk-pages-input" rows="1" placeholder="Paste rows: Name TAB PageID TAB Token  (one per line)" style="flex:1;font-family:monospace;font-size:12px;padding:6px 8px;border:1px solid #86efac;border-radius:6px;resize:none;min-height:34px;max-height:120px;overflow-y:auto;" oninput="this.style.height='34px';this.style.height=Math.min(this.scrollHeight,120)+'px';"></textarea>
+        <button type="button" class="qbtn" style="background:#16a34a;white-space:nowrap;" onclick="parseBulkPages()">🔍 Preview</button>
+        <button type="button" id="bulk-add-btn" class="qbtn" style="background:#15803d;display:none;white-space:nowrap;" onclick="submitBulkPages()">➕ Add</button>
+        <span id="bulk-status" style="font-size:12px;font-weight:600;white-space:nowrap;"></span>
       </div>
     </div>
+    <div id="bulk-preview" style="margin-bottom:12px;"></div>
+    <script>
+      var bulkParsed = [];
+      function parseBulkPages() {
+        var raw = document.getElementById('bulk-pages-input').value || '';
+        var lines = raw.split('\n').map(function(l){ return l.replace(/\r/g,'').trim(); }).filter(function(l){ return l.length > 0; });
+        bulkParsed = [];
+        var errors = [];
+        lines.forEach(function(line, idx) {
+          var cols = line.split('\t').map(function(c){ return c.trim(); }).filter(function(c){ return c.length > 0; });
+          if (cols.length < 2) { errors.push('Row '+(idx+1)+': needs at least 2 columns'); return; }
+          var name = '', pageId = '', token = '';
+          cols.forEach(function(c) {
+            if (/^EAA/i.test(c)) token = c;
+            else if (/^\d{8,}$/.test(c)) pageId = c;
+            else if (!name) name = c;
+          });
+          if (!pageId) { errors.push('Row '+(idx+1)+': no Page ID found (long number)'); return; }
+          if (!token) { errors.push('Row '+(idx+1)+': no Token found (starts with EAA)'); return; }
+          if (!name) name = 'Page ' + pageId;
+          bulkParsed.push({ name: name, pageId: pageId, token: token });
+        });
+        var preview = document.getElementById('bulk-preview');
+        var status = document.getElementById('bulk-status');
+        var addBtn = document.getElementById('bulk-add-btn');
+        if (!bulkParsed.length && !errors.length) { preview.innerHTML=''; addBtn.style.display='none'; status.textContent=''; return; }
+        var rows = bulkParsed.map(function(p,i){
+          return '<tr style="background:'+(i%2===0?'#f9fafb':'#fff')+'">'
+            +'<td style="padding:5px 8px;font-weight:600;font-size:13px;">'+escHtml(p.name)+'</td>'
+            +'<td style="padding:5px 8px;font-family:monospace;font-size:11px;color:#6b7280;">'+escHtml(p.pageId)+'</td>'
+            +'<td style="padding:5px 8px;font-family:monospace;font-size:11px;color:#16a34a;">'+escHtml(p.token.slice(0,14))+'...'+'</td>'
+            +'</tr>';
+        }).join('');
+        var errHtml = errors.length ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:6px 10px;margin-top:6px;font-size:12px;color:#dc2626;">'+errors.map(function(e){ return '<div>&#10060; '+escHtml(e)+'</div>'; }).join('')+'</div>' : '';
+        preview.innerHTML = bulkParsed.length
+          ? '<div style="background:#fff;border-radius:8px;border:1px solid #86efac;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06);">'
+            +'<table style="width:100%;border-collapse:collapse;"><thead><tr style="background:#f0fdf4;">'
+            +'<th style="padding:6px 8px;text-align:left;font-size:11px;color:#166534;">Name</th>'
+            +'<th style="padding:6px 8px;text-align:left;font-size:11px;color:#166534;">Page ID</th>'
+            +'<th style="padding:6px 8px;text-align:left;font-size:11px;color:#166534;">Token</th>'
+            +'</tr></thead><tbody>'+rows+'</tbody></table></div>'+errHtml
+          : errHtml;
+        if (bulkParsed.length > 0) {
+          status.style.color='#16a34a'; status.textContent=bulkParsed.length+' ready'+(errors.length?' ('+errors.length+' skipped)':'');
+          addBtn.style.display='inline-block'; addBtn.textContent='➕ Add '+bulkParsed.length;
+        } else {
+          status.style.color='#dc2626'; status.textContent=errors.length+' error(s)';
+          addBtn.style.display='none';
+        }
+      }
+      function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+      function submitBulkPages() {
+        if (!bulkParsed.length) return;
+        var btn=document.getElementById('bulk-add-btn');
+        var status=document.getElementById('bulk-status');
+        btn.disabled=true; btn.textContent='Adding...';
+        status.style.color='#6b7280'; status.textContent='Saving...';
+        fetch('/bulk-add-pages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pages:bulkParsed})})
+          .then(function(r){return r.json();})
+          .then(function(d){
+            if(d.ok){
+              status.style.color='#16a34a'; status.textContent=d.added+' added, '+d.skipped+' skipped';
+              btn.style.display='none';
+              document.getElementById('bulk-pages-input').value='';
+              document.getElementById('bulk-pages-input').style.height='34px';
+              document.getElementById('bulk-preview').innerHTML='';
+              bulkParsed=[];
+              setTimeout(function(){ location.reload(); }, 1200);
+            } else {
+              status.style.color='#dc2626'; status.textContent='Error: '+(d.error||'unknown');
+              btn.disabled=false;
+            }
+          })
+          .catch(function(e){ status.style.color='#dc2626'; status.textContent='Error: '+e.message; btn.disabled=false; });
+      }
+    </script>
 
     ${renderGroupManager(pages)}
 
@@ -2053,106 +2118,6 @@ function renderAllPagesView(pages, req) {
 
     ${renderLibraryManager()}
 
-    <div class="card" style="border:2px solid #bbf7d0;">
-      <h2>📋 Bulk Add Pages — Paste from Spreadsheet</h2>
-      <p style="color:#6b7280;font-size:13px;">Paste one or more rows directly from your spreadsheet. Each row: <strong>Name [tab] Page ID [tab] Token</strong> — columns can be in any order, the system auto-detects which is which. One row per line.</p>
-      <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#166534;">
-        <strong>Example format (tab-separated):</strong><br/>
-        <code style="font-size:11px;background:#dcfce7;padding:2px 6px;border-radius:4px;">Rebecca&nbsp;&nbsp;&nbsp;&nbsp;844231325433338&nbsp;&nbsp;&nbsp;&nbsp;EAAZABJsK508YBR...</code>
-      </div>
-      <textarea id="bulk-pages-input" placeholder="Paste your rows here (Name TAB PageID TAB Token)&#10;Rebecca	844231325433338	EAAZABJsK508...&#10;Sandra	109876543210123	EAAZABother..." style="width:100%;min-height:140px;font-family:monospace;font-size:12px;padding:10px;border:1px solid #86efac;border-radius:8px;resize:vertical;"></textarea>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
-        <button type="button" class="btn btn-green" onclick="parseBulkPages()" style="margin-top:0;">🔍 Preview Pages</button>
-        <button type="button" id="bulk-add-btn" class="btn" style="background:#16a34a;color:#fff;display:none;margin-top:0;" onclick="submitBulkPages()">➕ Add All Pages</button>
-        <span id="bulk-status" style="font-size:13px;font-weight:600;"></span>
-      </div>
-      <div id="bulk-preview" style="margin-top:12px;"></div>
-    </div>
-
-    <script>
-      var bulkParsed = [];
-      function parseBulkPages() {
-        var raw = document.getElementById('bulk-pages-input').value || '';
-        var lines = raw.split('\n').map(function(l){ return l.replace(/\r/g,'').trim(); }).filter(function(l){ return l.length > 0; });
-        bulkParsed = [];
-        var errors = [];
-        lines.forEach(function(line, idx) {
-          var cols = line.split('\t').map(function(c){ return c.trim(); }).filter(function(c){ return c.length > 0; });
-          if (cols.length < 2) { errors.push('Row '+(idx+1)+': needs at least 2 columns (got '+cols.length+')'); return; }
-          var name = '', pageId = '', token = '';
-          cols.forEach(function(c) {
-            if (/^EAA/i.test(c)) token = c;
-            else if (/^\d{8,}$/.test(c)) pageId = c;
-            else if (!name) name = c;
-          });
-          if (!pageId) { errors.push('Row '+(idx+1)+': no Page ID found (should be a long number) in: '+line.slice(0,60)); return; }
-          if (!token) { errors.push('Row '+(idx+1)+': no Token found (should start with EAA) in: '+line.slice(0,60)); return; }
-          if (!name) name = 'Page ' + pageId;
-          bulkParsed.push({ name: name, pageId: pageId, token: token });
-        });
-        var preview = document.getElementById('bulk-preview');
-        var status = document.getElementById('bulk-status');
-        var addBtn = document.getElementById('bulk-add-btn');
-        if (bulkParsed.length === 0 && errors.length === 0) {
-          status.style.color = '#92400e'; status.textContent = 'Nothing found — check format';
-          preview.innerHTML = ''; addBtn.style.display = 'none'; return;
-        }
-        var rows = bulkParsed.map(function(p, i) {
-          return '<tr style="background:'+(i%2===0?'#f9fafb':'#fff')+'">'
-            + '<td style="padding:7px 10px;font-weight:600;">'+escHtml(p.name)+'</td>'
-            + '<td style="padding:7px 10px;font-family:monospace;font-size:12px;color:#6b7280;">'+escHtml(p.pageId)+'</td>'
-            + '<td style="padding:7px 10px;font-family:monospace;font-size:11px;color:#16a34a;">'+escHtml(p.token.slice(0,16))+'...'+escHtml(p.token.slice(-6))+'</td>'
-            + '</tr>';
-        }).join('');
-        var errHtml = errors.length ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:8px 12px;margin-top:8px;font-size:12px;color:#dc2626;">'
-          + errors.map(function(e){ return '<div>&#10060; '+escHtml(e)+'</div>'; }).join('') + '</div>' : '';
-        preview.innerHTML = '<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">'
-          + '<thead><tr style="background:#f0fdf4;"><th style="padding:8px 10px;text-align:left;font-size:12px;color:#166534;">Name</th>'
-          + '<th style="padding:8px 10px;text-align:left;font-size:12px;color:#166534;">Page ID</th>'
-          + '<th style="padding:8px 10px;text-align:left;font-size:12px;color:#166534;">Token</th></tr></thead>'
-          + '<tbody>'+rows+'</tbody></table>' + errHtml;
-        if (bulkParsed.length > 0) {
-          status.style.color = '#166534';
-          status.textContent = bulkParsed.length + ' page(s) ready to add' + (errors.length ? ' (' + errors.length + ' row(s) skipped)' : '');
-          addBtn.style.display = 'inline-block';
-          addBtn.textContent = 'Add ' + bulkParsed.length + ' Pages';
-        } else {
-          status.style.color = '#dc2626'; status.textContent = errors.length + ' error(s) — check format';
-          addBtn.style.display = 'none';
-        }
-      }
-      function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-      function submitBulkPages() {
-        if (!bulkParsed.length) return;
-        var btn = document.getElementById('bulk-add-btn');
-        var status = document.getElementById('bulk-status');
-        btn.disabled = true; btn.textContent = 'Adding...';
-        status.style.color = '#6b7280'; status.textContent = 'Adding pages...';
-        fetch('/bulk-add-pages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pages: bulkParsed })
-        })
-        .then(function(r){ return r.json(); })
-        .then(function(d){
-          if (d.ok) {
-            status.style.color = '#16a34a';
-            status.textContent = d.added + ' added, ' + d.skipped + ' skipped (already existed)';
-            btn.style.display = 'none';
-            document.getElementById('bulk-pages-input').value = '';
-            document.getElementById('bulk-preview').innerHTML = '';
-            bulkParsed = [];
-          } else {
-            status.style.color = '#dc2626'; status.textContent = 'Error: ' + (d.error || 'unknown');
-            btn.disabled = false; btn.textContent = 'Add ' + bulkParsed.length + ' Pages';
-          }
-        })
-        .catch(function(e){
-          status.style.color = '#dc2626'; status.textContent = 'Error: ' + e.message;
-          btn.disabled = false;
-        });
-      }
-    </script>
 
     <div class="card">
       <h2>➕ Add New Page</h2>
