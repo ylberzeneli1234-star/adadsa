@@ -1818,9 +1818,8 @@ function renderAllPagesView(pages, req) {
         var raw = document.getElementById('bulk-pages-input').value || '';
         if (!raw.trim()) { return; }
 
-        // Split ALL content by both tabs and newlines — handles any paste format
-        // (name+ID on one line, token on next, or all on same line, etc.)
-        var allCells = raw.replace(/\r/g,'').split(/[\t\n]/)
+        var CR=String.fromCharCode(13), TAB=String.fromCharCode(9), NL=String.fromCharCode(10);
+        var allCells = raw.split(CR).join('').split(TAB).join(NL).split(NL)
           .map(function(c){ return c.trim(); })
           .filter(function(c){ return c.length > 0; });
 
