@@ -1348,12 +1348,8 @@ function renderTemplateManager(req) {
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div>
-            <label>Card Title</label>
+            <label>Card Title (the name)</label>
             <input name="title" id="f-title" placeholder="e.g. Elizabeth 56 💕" style="width:100%;"/>
-          </div>
-          <div>
-            <label>Website</label>
-            <select name="set" id="f-set" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;">${setOptions}</select>
           </div>
         </div>
         <label style="margin-top:10px;display:block;">Card Subtitle</label>
@@ -1370,11 +1366,28 @@ function renderTemplateManager(req) {
         </div>
         <div id="f-dropzone" style="margin-top:8px;border:2px dashed #cbd5e1;border-radius:8px;padding:14px;text-align:center;color:#94a3b8;font-size:13px;cursor:pointer;">📂 Drag &amp; drop a photo here (or click) to upload to Imgur</div>
         <div id="f-photo-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-top:10px;"></div>
-        <label style="margin-top:10px;display:block;">Redirect URL <span id="f-redirect-label" style="font-weight:400;color:#94a3b8;font-size:11px;"></span></label>
-        <input name="redirect" id="f-redirect" placeholder="https://scrollgallery.com/?p=50328" style="width:100%;font-family:monospace;font-size:12px;"/>
-        <div id="f-linked-block" style="display:none;margin-top:10px;background:#dcfce7;border:1px solid #86efac;border-radius:8px;padding:10px 12px;">
-          <div style="font-size:12px;font-weight:700;color:#166534;margin-bottom:6px;">🔗 Linked partner redirect URL <span style="font-weight:400;font-size:11px;color:#16a34a;">(title, subtitle, photos, button will sync — only this URL stays separate)</span></div>
-          <input name="linkedRedirect" id="f-linked-redirect" placeholder="https://photos.theviralbox.info/archives/..." style="width:100%;font-family:monospace;font-size:12px;background:#fff;border:1px solid #86efac;"/>
+
+        <div style="margin-top:14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px;">
+          <div style="font-size:13px;font-weight:700;color:#0369a1;margin-bottom:10px;">🔗 Redirect URLs — one per website <span style="font-weight:400;font-size:11px;color:#0284c7;">(fill the ones you have — one card is created per filled URL, all linked together)</span></div>
+          ${setNames.map(name => {
+            const color = name === DEFAULT_SET ? '#3a8dde' : '#f59e0b';
+            const placeholder = name === DEFAULT_SET
+              ? 'https://scrollgallery.com/?p=51185'
+              : name === SECOND_SET
+              ? 'https://photos.theviralbox.info/archives/2977'
+              : 'https://...';
+            return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+              <span style="background:${color};color:#fff;font-size:11px;font-weight:700;padding:3px 10px;border-radius:5px;white-space:nowrap;min-width:110px;text-align:center;">${esc(name)}</span>
+              <input name="redirect_${esc(name)}" id="f-redirect-${esc(name)}" placeholder="${esc(placeholder)}" style="flex:1;font-family:monospace;font-size:12px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/>
+            </div>`;
+          }).join('')}
+          <div style="font-size:11px;color:#0369a1;margin-top:4px;">💡 Leave a URL blank to skip that website. Fill all to create cards for all sites at once.</div>
+        </div>
+
+        <!-- Hidden fields kept for edit mode (single-card editing) -->
+        <input type="hidden" name="redirect" id="f-redirect" value=""/>
+        <div id="f-linked-block" style="display:none;">
+          <input type="hidden" name="linkedRedirect" id="f-linked-redirect" value=""/>
           <input type="hidden" name="linkedId" id="f-linked-id" value=""/>
         </div>
         <div style="margin-top:14px;display:flex;gap:8px;">
@@ -1517,13 +1530,28 @@ function renderTemplateManager(req) {
         });
         if (imgurUrls.length > 0) renderPhotoGrid();
 
-        // Set redirect
-        var setSel = document.getElementById('f-set');
-        var redirect = (setSel.value === 'TheViralBox' && viralUrl) ? viralUrl : (scrollUrl || viralUrl);
-        if (redirect) {
+        // Fill per-set redirect fields (new multi-URL form)
+        if (scrollUrl) {
+          var sgField = document.getElementById('f-redirect-Scrollgallery');
+          if (sgField) sgField.value = scrollUrl;
+        }
+        if (viralUrl) {
+          var tvField = document.getElementById('f-redirect-TheViralBox');
+          if (tvField) tvField.value = viralUrl;
+        }
+        // Also fill any other fields if URL contains the set name (future websites)
+        [scrollUrl, viralUrl].forEach(function(u) {
+          if (!u) return;
+          var allInputs = document.querySelectorAll('[id^="f-redirect-"]');
+          for (var i = 0; i < allInputs.length; i++) {
+            var setName = allInputs[i].id.replace('f-redirect-','').toLowerCase();
+            if (u.toLowerCase().indexOf(setName) !== -1) allInputs[i].value = u;
+          }
+        });
+        // Fallback: old single redirect field
+        var redirect = scrollUrl || viralUrl;
+        if (redirect && document.getElementById('f-redirect')) {
           document.getElementById('f-redirect').value = redirect;
-          if (redirect.indexOf('theviralbox') !== -1) setSel.value = 'TheViralBox';
-          else if (redirect.indexOf('scrollgallery') !== -1) setSel.value = 'Scrollgallery';
         }
 
         // Show visible summary below button
@@ -1551,31 +1579,50 @@ function renderTemplateManager(req) {
         formPhotos = (Array.isArray(t.photos) && t.photos.length) ? t.photos.slice() : (t.photo ? [t.photo] : []);
         renderPhotoGrid();
         document.getElementById('f-button').value = t.buttonText || '';
-        document.getElementById('f-redirect').value = t.redirect || '';
-        document.getElementById('f-set').value = t.set || 'Scrollgallery';
         document.getElementById('tmpl-form').action = '/template-edit';
         document.getElementById('form-title').textContent = '✏️ Edit Template';
         document.getElementById('f-submit').textContent = '💾 Save Changes';
         document.getElementById('f-cancel').style.display = 'inline-block';
-        // Show linked partner block if this card is linked
+
+        // Fill per-set redirect fields
+        // First clear all per-set fields
+        var allRedirectFields = document.querySelectorAll('[id^="f-redirect-"]');
+        for (var i = 0; i < allRedirectFields.length; i++) allRedirectFields[i].value = '';
+        // Fill this card's own set
+        var ownField = document.getElementById('f-redirect-' + (t.set || 'Scrollgallery'));
+        if (ownField) ownField.value = t.redirect || '';
+        // Fill linked group members' redirect fields
+        var allTmpls = window.__tmplData || {};
+        Object.keys(allTmpls).forEach(function(tid) {
+          var other = allTmpls[tid];
+          if (tid === t.id) return;
+          var isLinked = (t.linkGroup && other.linkGroup === t.linkGroup) || other.id === t.linkedId || t.linkedId === other.id;
+          if (isLinked) {
+            var field = document.getElementById('f-redirect-' + (other.set || ''));
+            if (field) field.value = other.redirect || '';
+          }
+        });
+        // Also set hidden single redirect for fallback
+        var hiddenRedirect = document.getElementById('f-redirect');
+        if (hiddenRedirect) hiddenRedirect.value = t.redirect || '';
+
+        // Update linked block for legacy pairs
         var lb = document.getElementById('f-linked-block');
-        var lbl = document.getElementById('f-redirect-label');
         var lrid = document.getElementById('f-linked-id');
         var lrurl = document.getElementById('f-linked-redirect');
-        if (t.linkedId) {
-          var partner = getTmpl(t.linkedId);
-          lb.style.display = 'block';
-          lbl.textContent = "(this card's own URL — stays separate from partner)";
-          lrid.value = t.linkedId;
-          lrurl.value = partner ? (partner.redirect || '') : '';
-          lrurl.placeholder = partner ? 'Partner: ' + (partner.set || 'other set') + ' redirect URL' : 'Partner redirect URL';
-          document.getElementById('f-submit').textContent = '💾 Save + Sync to Linked Card';
-        } else {
-          lb.style.display = 'none';
-          lbl.textContent = '';
-          lrid.value = '';
-          lrurl.value = '';
-        }
+        if (lb) lb.style.display = 'none';
+        if (lrid) lrid.value = t.linkedId || '';
+        if (lrurl) lrurl.value = '';
+
+        // Update submit button label based on how many linked cards exist
+        var linkedCount = 0;
+        Object.keys(allTmpls).forEach(function(tid) {
+          if (tid === t.id) return;
+          var other = allTmpls[tid];
+          if ((t.linkGroup && other.linkGroup === t.linkGroup) || other.id === t.linkedId) linkedCount++;
+        });
+        if (linkedCount > 0) document.getElementById('f-submit').textContent = '💾 Save + Sync to ' + linkedCount + ' linked card(s)';
+
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
       function resetForm() {
@@ -2843,22 +2890,54 @@ app.post('/template-add', (req, res) => {
   const b = req.body;
   const photos = parsePhotos(b.photos, b.photo);
   if (!photos.length) return res.redirect('/?page=templates&error=' + encodeURIComponent('At least one photo is required'));
-  const setName = (b.set && lib.redirectSets[b.set]) ? b.set : DEFAULT_SET;
-  const tmpl = {
-    id: 't' + Date.now() + Math.floor(Math.random() * 1000),
+
+  const setNames = getSetNames(lib);
+  const sharedFields = {
     title: (b.title || '').trim(),
     subtitle: (b.subtitle || '').trim(),
     photos,
     photo: photos[0],
-    redirect: normalizeUrl(b.redirect || ''),
     buttonText: (b.buttonText || '').trim() || 'My Photos 📞',
-    active: true,
-    set: setName
+    active: true
   };
+
+  // Collect filled redirect URLs per set
+  const toCreate = [];
+  setNames.forEach(name => {
+    const url = normalizeUrl((b['redirect_' + name] || '').trim());
+    if (url) toCreate.push({ set: name, redirect: url });
+  });
+  // Fallback: old single redirect field (used in edit mode)
+  if (!toCreate.length && b.redirect) {
+    const setName = (b.set && lib.redirectSets[b.set]) ? b.set : DEFAULT_SET;
+    toCreate.push({ set: setName, redirect: normalizeUrl(b.redirect) });
+  }
+  if (!toCreate.length) return res.redirect('/?page=templates&error=' + encodeURIComponent('At least one redirect URL is required'));
+
+  // Generate IDs first so we can cross-link
+  const newIds = toCreate.map(() => 't' + Date.now() + Math.floor(Math.random() * 10000));
+  const linkGroup = newIds.length > 1 ? ('lg' + Date.now()) : '';
+
+  const newCards = toCreate.map((item, i) => ({
+    ...sharedFields,
+    id: newIds[i],
+    set: item.set,
+    redirect: item.redirect,
+    linkGroup,
+    // For backward compat with existing 2-card linked system
+    linkedId: newIds.length === 2 ? newIds[1 - i] : undefined
+  }));
+
   lib.cardTemplates = lib.cardTemplates || [];
-  lib.cardTemplates.unshift(tmpl);
+  // Add all new cards at the front
+  newCards.reverse().forEach(card => lib.cardTemplates.unshift(card));
   saveLibrary(lib);
-  res.redirect('/?page=templates&new=' + tmpl.id + '&lib_msg=' + encodeURIComponent('Template added to ' + setName));
+
+  const firstId = newIds[0];
+  const msg = newCards.length > 1
+    ? `${newCards.length} cards created (${toCreate.map(t => t.set).join(', ')}) — all linked`
+    : 'Template added to ' + toCreate[0].set;
+  res.redirect('/?page=templates&new=' + firstId + '&lib_msg=' + encodeURIComponent(msg));
 });
 
 app.post('/template-edit', (req, res) => {
@@ -2867,7 +2946,7 @@ app.post('/template-edit', (req, res) => {
   const t = (lib.cardTemplates || []).find(x => x.id === b.id);
   if (!t) return res.redirect('/?page=templates&error=Template+not+found');
 
-  // Update this card
+  // Update this card's shared fields
   if (b.title !== undefined) t.title = b.title.trim();
   if (b.subtitle !== undefined) t.subtitle = b.subtitle.trim();
   if (b.photos !== undefined) {
@@ -2876,40 +2955,47 @@ app.post('/template-edit', (req, res) => {
   } else if (b.photo && b.photo.trim()) {
     t.photo = b.photo.trim(); t.photos = [t.photo];
   }
-  if (b.redirect !== undefined) t.redirect = normalizeUrl(b.redirect);
   if (b.buttonText !== undefined) t.buttonText = b.buttonText.trim() || 'My Photos 📞';
-  if (b.set && lib.redirectSets[b.set]) t.set = b.set;
 
-  // Sync shared fields to linked partner (if any)
-  let synced = false;
-  const linkedId = b.linkedId || t.linkedId;
-  if (linkedId) {
-    const partner = (lib.cardTemplates || []).find(x => x.id === linkedId);
-    if (partner) {
-      // Sync: photos, title, subtitle, buttonText — NOT redirect (each keeps its own)
-      partner.title = t.title;
-      partner.subtitle = t.subtitle;
-      partner.photos = t.photos ? [...t.photos] : [];
-      partner.photo = t.photo;
-      partner.buttonText = t.buttonText;
-      // Also update partner's redirect if the form sent a linkedRedirect value
-      if (b.linkedRedirect && b.linkedRedirect.trim()) {
-        partner.redirect = normalizeUrl(b.linkedRedirect.trim());
-      }
-      // Ensure both sides have linkedId pointing at each other
-      partner.linkedId = t.id;
-      t.linkedId = partner.id;
-      synced = true;
-    } else {
-      // Partner missing — clear the dead link
-      t.linkedId = undefined;
+  // Update this card's OWN redirect
+  const setNames = getSetNames(lib);
+  const ownRedirectKey = 'redirect_' + t.set;
+  if (b[ownRedirectKey]) t.redirect = normalizeUrl(b[ownRedirectKey]);
+  else if (b.redirect) t.redirect = normalizeUrl(b.redirect);
+
+  // Find all linked cards — by linkGroup first, then fall back to linkedId pair
+  const groupMembers = t.linkGroup
+    ? (lib.cardTemplates || []).filter(x => x.linkGroup === t.linkGroup && x.id !== t.id)
+    : [];
+  const legacyPartner = (!t.linkGroup && b.linkedId)
+    ? (lib.cardTemplates || []).find(x => x.id === b.linkedId)
+    : null;
+  const partners = groupMembers.length ? groupMembers : (legacyPartner ? [legacyPartner] : []);
+
+  let synced = 0;
+  partners.forEach(partner => {
+    partner.title = t.title;
+    partner.subtitle = t.subtitle;
+    partner.photos = t.photos ? [...t.photos] : [];
+    partner.photo = t.photo;
+    partner.buttonText = t.buttonText;
+    // Update partner's own redirect if a field for its set was submitted
+    const partnerRedirectKey = 'redirect_' + partner.set;
+    if (b[partnerRedirectKey] && b[partnerRedirectKey].trim()) {
+      partner.redirect = normalizeUrl(b[partnerRedirectKey].trim());
+    } else if (b.linkedRedirect && b.linkedRedirect.trim() && !t.linkGroup) {
+      partner.redirect = normalizeUrl(b.linkedRedirect.trim());
     }
-  }
+    // Keep legacy linkedId in sync
+    partner.linkedId = t.id;
+    t.linkedId = partner.id;
+    synced++;
+  });
 
   saveLibrary(lib);
-  const msg = synced
-    ? 'Template updated + synced to linked partner ✅'
-    : 'Template updated (no linked partner to sync)';
+  const msg = synced > 0
+    ? `Template updated + synced to ${synced} linked card(s) ✅`
+    : 'Template updated';
   res.redirect('/?page=templates&lib_msg=' + encodeURIComponent(msg));
 });
 
