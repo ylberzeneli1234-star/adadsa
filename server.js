@@ -1468,9 +1468,13 @@ function renderTemplateManager(req) {
       function fillFromRow() {
         var raw = document.getElementById('f-rawrow').value || '';
         if (!raw.trim()) { alert('Paste a row first.'); return; }
-        var TAB = String.fromCharCode(9), NL = String.fromCharCode(10);
-        var line = raw.split(NL)[0];
-        var cells = line.split(TAB).map(function(c){ return c.trim(); }).filter(function(c){ return c.length > 0; });
+        var TAB = String.fromCharCode(9), NL = String.fromCharCode(10), CR = String.fromCharCode(13);
+
+        // Split by BOTH tabs and newlines — handles long rows that wrap in the textarea
+        // or spreadsheets that paste with line breaks between cells
+        var cells = raw.replace(new RegExp(CR, 'g'), '').split(new RegExp('[' + TAB + NL + ']'))
+          .map(function(c){ return c.trim(); })
+          .filter(function(c){ return c.length > 0; });
 
         var imgurUrls = [];
         var scrollUrl = '';
@@ -1479,20 +1483,16 @@ function renderTemplateManager(req) {
 
         cells.forEach(function(v) {
           if (!v) return;
-          if (v.indexOf('http') === 0) {
-            // imgur photo
+          if (v.indexOf('http') === 0 || v.indexOf('https') === 0) {
             if (v.indexOf('imgur.com') !== -1) {
-              // normalize: ensure it has an extension
+              // Normalize: ensure it has an image extension
               var url = v;
               if (!/\.(jpg|jpeg|png|gif|webp)$/i.test(url)) url = url + '.png';
               if (!imgurUrls.includes(url)) imgurUrls.push(url);
             }
-            // redirect URLs
-            else if (v.indexOf('theviralbox') !== -1) { viralUrl = v; }
-            else if (v.indexOf('scrollgallery') !== -1) { scrollUrl = v; }
-            // other URLs ignored
+            else if (v.indexOf('theviralbox') !== -1) { if (!viralUrl) viralUrl = v; }
+            else if (v.indexOf('scrollgallery') !== -1) { if (!scrollUrl) scrollUrl = v; }
           } else {
-            // plain text cell — could be title, subtitle, or button
             textCells.push(v);
           }
         });
@@ -1510,7 +1510,7 @@ function renderTemplateManager(req) {
           renderPhotoGrid();
         }
 
-        // Set redirect URL
+        // Set redirect URL and website selector
         var setSel = document.getElementById('f-set');
         var redirect = (setSel.value === 'TheViralBox' && viralUrl) ? viralUrl : (scrollUrl || viralUrl);
         if (redirect) {
@@ -1519,15 +1519,17 @@ function renderTemplateManager(req) {
           else if (redirect.indexOf('scrollgallery') !== -1) setSel.value = 'Scrollgallery';
         }
 
-        // Show summary
-        var summary = [];
-        if (imgurUrls.length > 0) summary.push(imgurUrls.length + ' photo(s) found');
-        if (redirect) summary.push('redirect: ' + redirect.replace('https://', '').replace('http://', '').slice(0, 40));
-        if (summary.length) {
-          var info = document.getElementById('f-rawrow');
-          info.style.borderColor = '#16a34a';
-          setTimeout(function(){ info.style.borderColor = ''; }, 2000);
-        }
+        // Visual feedback — green border flash + summary
+        var box = document.getElementById('f-rawrow');
+        box.style.borderColor = '#16a34a';
+        box.style.borderWidth = '2px';
+        setTimeout(function(){ box.style.borderColor = ''; box.style.borderWidth = ''; }, 2000);
+
+        var parts = [];
+        if (imgurUrls.length) parts.push(imgurUrls.length + ' photo(s)');
+        if (redirect) parts.push('redirect set');
+        if (textCells[0]) parts.push('title: ' + textCells[0].slice(0, 20));
+        if (parts.length) console.log('fillFromRow:', parts.join(', '));
       }
       function editTmpl(id) {
         var t = getTmpl(id); if (!t) return;
