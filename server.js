@@ -1824,18 +1824,29 @@ function renderAllPagesView(pages, req) {
           .filter(function(c){ return c.length > 0; });
 
         // Classify every cell by type
+        function isDigit(ch) { var c=ch.charCodeAt(0); return c>=48&&c<=57; }
+        function isAllDigits(s) { if(s.length<8) return false; for(var i=0;i<s.length;i++){if(!isDigit(s[i]))return false;} return true; }
+        function extractDigits(s) {
+          var best='', cur='';
+          for(var i=0;i<s.length;i++){
+            if(isDigit(s[i])){ cur+=s[i]; }
+            else { if(cur.length>best.length) best=cur; cur=''; }
+          }
+          if(cur.length>best.length) best=cur;
+          return best.length>=8 ? best : null;
+        }
+        function isToken(s) { return s.length>10&&s.slice(0,3).toUpperCase()==='EAA'; }
         var tokens = [], pageIds = [], names = [];
         allCells.forEach(function(c) {
-          if (/^EAA/i.test(c)) {
+          if (isToken(c)) {
             tokens.push(c);
-          } else if (/^\d{8,}$/.test(c)) {
+          } else if (isAllDigits(c)) {
             pageIds.push(c);
           } else {
-            // Cell might be "Pleasant meetings 806249852577059" (space-separated)
-            var numMatch = c.match(/\b(\d{8,})\b/);
-            if (numMatch) {
-              pageIds.push(numMatch[1]);
-              var namepart = c.replace(numMatch[1], '').trim();
+            var found = extractDigits(c);
+            if (found) {
+              pageIds.push(found);
+              var namepart = c.replace(found, '').trim();
               if (namepart) names.push(namepart);
             } else {
               names.push(c);
