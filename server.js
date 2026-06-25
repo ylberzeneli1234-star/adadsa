@@ -957,24 +957,9 @@ function renderGroupManager(pages) {
     </div>`;
   }).join('');
 
-  const groupOpts = ['', ...groups].map(g =>
-    `<option value="${esc(g)}">${g || '\u2014 unassigned \u2014'}</option>`
-  ).join('');
-
-  const rows = pages.map(p => {
-    return `<tr class="grp-row" data-label="${esc((p.label||'').toLowerCase())}">
-      <td style="width:32px;text-align:center;">
-        <input type="checkbox" class="grp-chk" value="${esc(p.pageId)}" style="width:16px;height:16px;cursor:pointer;accent-color:#6d28d9;"/>
-      </td>
-      <td><strong>${esc(p.label)}</strong><br/><span style="font-size:11px;color:#6b7280;">${esc(p.pageId)}</span></td>
-      <td><span class="group-badge ${p.group ? '' : 'unassigned'}" id="gbadge-${esc(p.pageId)}">${esc(p.group || 'unassigned')}</span></td>
-    </tr>`;
-  }).join('');
-
   return `
     <div class="card" style="border:2px solid #c4b5fd;">
       <h2>\ud83d\udce6 Page Groups <span style="font-size:12px;font-weight:400;color:#7c3aed;">\u2014 send to Part 1, Part 2, Part 3 separately or all at once</span></h2>
-      <p style="color:#6b7280;font-size:13px;">Assign pages to groups so you can Send Now to one group at a time. Create a group first, then tick pages and assign them in one click \u2014 no redirects.</p>
 
       <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
         ${pills || '<span style="color:#94a3b8;font-size:13px;">No groups yet \u2014 create one below.</span>'}
@@ -983,92 +968,11 @@ function renderGroupManager(pages) {
         </div>` : ''}
       </div>
 
-      <form action="/group-create" method="POST" style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+      <form action="/group-create" method="POST" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <input type="text" name="group" autocomplete="off" placeholder='New group name, e.g. "Part 1"' style="flex:1;min-width:200px;max-width:320px;padding:8px 12px;border:1px solid #c4b5fd;border-radius:6px;font-size:14px;"/>
         <button type="submit" class="btn" style="background:#6d28d9;color:#fff;margin-top:0;">\u2795 Create Group</button>
       </form>
-
-      <details id="grp-assign-details">
-        <summary style="cursor:pointer;font-weight:600;color:#6d28d9;padding:6px 0;">\u25b6 Assign pages to groups (${pages.length} pages)</summary>
-        <div style="margin-top:10px;">
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;margin-bottom:10px;">
-            <button type="button" onclick="grpSelectAll(true)" class="qbtn" style="background:#6d28d9;">\u2611 Select All</button>
-            <button type="button" onclick="grpSelectAll(false)" class="qbtn" style="background:#94a3b8;">\u2610 Clear</button>
-            <input type="text" id="grp-filter" autocomplete="off" placeholder="\ud83d\udd0e Filter pages\u2026" oninput="grpFilter(this.value)" style="padding:5px 10px;border:1px solid #c4b5fd;border-radius:6px;font-size:13px;width:180px;"/>
-            <span style="color:#cbd5e1;font-size:18px;">|</span>
-            <select id="grp-target" style="padding:6px 10px;border:1px solid #6d28d9;border-radius:6px;font-size:13px;color:#6d28d9;font-weight:600;background:#fff;">
-              ${groupOpts}
-            </select>
-            <button type="button" onclick="grpAssignSelected()" class="qbtn" style="background:#6d28d9;padding:6px 14px;font-size:13px;">\u2713 Assign Selected</button>
-            <span id="grp-sel-count" style="font-size:12px;color:#7c3aed;font-weight:600;"></span>
-            <span id="grp-status" style="font-size:12px;font-weight:600;"></span>
-          </div>
-          <table>
-            <thead><tr><th style="width:32px;"></th><th>Page</th><th>Current Group</th></tr></thead>
-            <tbody id="grp-tbody">${rows}</tbody>
-          </table>
-        </div>
-      </details>
-    </div>
-    <script>
-      function grpFilter(q) {
-        q = (q || '').toLowerCase();
-        document.querySelectorAll('.grp-row').forEach(function(r) {
-          r.style.display = r.getAttribute('data-label').indexOf(q) !== -1 ? '' : 'none';
-        });
-      }
-      function grpSelectAll(on) {
-        document.querySelectorAll('.grp-chk').forEach(function(c) {
-          if (c.closest('tr').style.display !== 'none') c.checked = on;
-        });
-        grpUpdateCount();
-      }
-      function grpUpdateCount() {
-        var n = document.querySelectorAll('.grp-chk:checked').length;
-        var el = document.getElementById('grp-sel-count');
-        if (el) el.textContent = n ? n + ' selected' : '';
-      }
-      function grpAssignSelected() {
-        var checked = document.querySelectorAll('.grp-chk:checked');
-        var ids = []; for (var i = 0; i < checked.length; i++) ids.push(checked[i].value);
-        if (!ids.length) { alert('Tick at least one page first.'); return; }
-        var group = document.getElementById('grp-target').value;
-        var label = group || 'unassigned';
-        if (!confirm('Assign ' + ids.length + ' page(s) to "' + label + '"?')) return;
-        var status = document.getElementById('grp-status');
-        status.style.color = '#6b7280'; status.textContent = 'Saving\u2026';
-        fetch('/group-assign-bulk', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pageIds: ids, group: group })
-        })
-        .then(function(r) { return r.json(); })
-        .then(function(d) {
-          if (d && d.ok) {
-            status.style.color = '#16a34a';
-            status.textContent = '\u2713 ' + d.updated + ' pages \u2192 "' + label + '"';
-            ids.forEach(function(pid) {
-              var badge = document.getElementById('gbadge-' + pid);
-              if (badge) {
-                badge.textContent = group || 'unassigned';
-                badge.className = 'group-badge' + (group ? '' : ' unassigned');
-              }
-              var chk = document.querySelector('.grp-chk[value="' + pid + '"]');
-              if (chk) chk.checked = false;
-            });
-            grpUpdateCount();
-            setTimeout(function() { status.textContent = ''; }, 3000);
-          } else {
-            status.style.color = '#dc2626';
-            status.textContent = '\u2717 ' + ((d && d.error) || 'failed');
-          }
-        })
-        .catch(function(e) { status.style.color = '#dc2626'; status.textContent = '\u2717 ' + e.message; });
-      }
-      document.addEventListener('change', function(e) {
-        if (e.target && e.target.classList.contains('grp-chk')) grpUpdateCount();
-      });
-    </script>`;
+    </div>`;
 }
 
 // ============================================
@@ -1985,74 +1889,6 @@ function renderAllPagesView(pages, req) {
             <thead><tr><th style="width:28px;" title="Drag rows to reorder">⠿</th><th>Page / Group <span id="reorder-status" style="font-size:11px;font-weight:400;margin-left:8px;"></span></th><th>Fans</th><th>Clicks (today/total)</th><th>Messages</th><th>Send Progress</th><th>Actions</th></tr></thead>
             <tbody id="pages-tbody">${rows}</tbody>
           </table>
-
-          <div class="card" style="margin-top:0;">
-            <h2>🔑 Page Keys &amp; 📥 Contacts</h2>
-            <input type="text" id="creds-filter" placeholder="🔎 Filter pages by name…" oninput="filterCreds(this.value)" style="width:100%;margin-bottom:10px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
-              <button type="button" class="qbtn" style="background:#2563eb;" onclick="importSelected()">📥 Import selected</button>
-              <button type="button" class="qbtn" style="background:#1d4ed8;" onclick="importAllPagesContacts()">📥 Import ALL pages</button>
-              <span style="width:1px;height:18px;background:#cbd5e1;display:inline-block;"></span>
-              <button type="button" class="qbtn" style="background:#e2e8f0;color:#475569;" onclick="selectAllImp(true)">Select all</button>
-              <button type="button" class="qbtn" style="background:#e2e8f0;color:#475569;" onclick="selectAllImp(false)">Clear</button>
-              <span id="imp-progress" style="font-size:12px;color:#6b7280;font-weight:600;"></span>
-            </div>
-            <div style="max-height:420px;overflow:auto;border:1px solid #f1f5f9;border-radius:8px;">
-              ${pages.map(p => `
-              <div class="cred-row" data-pageid="${esc(p.pageId)}" data-label="${esc((p.label||'').toLowerCase())}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid #f1f5f9;">
-                <input type="checkbox" class="imp-sel" value="${esc(p.pageId)}" title="Select for bulk import" style="width:auto;"/>
-                <input type="text" value="${esc(p.label||'')}" data-f="label" title="Page name" style="flex:1;min-width:140px;font-size:13px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
-                <input type="text" value="${esc(p.pageId)}" data-f="pageId" title="Page ID" style="width:150px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
-                <input type="text" placeholder="paste new token · blank = keep" data-f="token" title="Access token" style="flex:2;min-width:160px;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:5px;"/>
-                <span class="tok-hint" style="font-size:10px;font-family:monospace;min-width:86px;color:${p.accessToken ? '#16a34a' : '#dc2626'};">${p.accessToken ? '🔑 ' + esc(p.accessToken.slice(0,6)) + '…' + esc(p.accessToken.slice(-4)) : '⚠️ none'}</span>
-                <button type="button" class="qbtn" style="background:#16a34a;" onclick="savePageCreds(this)">💾 Save</button>
-                <button type="button" class="qbtn" style="background:#2563eb;" onclick="importOne(this)">📥 Import</button>
-                <span class="cred-status" style="font-size:12px;font-weight:600;min-width:70px;"></span>
-              </div>`).join('')}
-            </div>
-          </div>
-          <script>
-            function filterCreds(q){ q=(q||'').toLowerCase(); var rows=document.querySelectorAll('.cred-row'); for(var i=0;i<rows.length;i++){ var m=rows[i].getAttribute('data-label').indexOf(q)!==-1; rows[i].style.display=m?'':'none'; } }
-            function savePageCreds(btn){
-              var row=btn.closest('.cred-row'); var pageId=row.getAttribute('data-pageid');
-              var label=row.querySelector('[data-f="label"]').value; var newPageId=row.querySelector('[data-f="pageId"]').value; var token=row.querySelector('[data-f="token"]').value;
-              var status=row.querySelector('.cred-status'); status.style.color='#6b7280'; status.textContent='saving…';
-              fetch('/page-update-inline',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pageId:pageId,label:label,newPageId:newPageId,token:token})})
-                .then(function(r){return r.json();})
-                .then(function(d){
-                  if(d&&d.ok){ status.style.color='#16a34a'; status.textContent='✓ saved'; row.querySelector('[data-f="token"]').value=''; if(d.pageId){ row.setAttribute('data-pageid',d.pageId); } setTimeout(function(){status.textContent='';},2500); }
-                  else { status.style.color='#dc2626'; status.textContent=(d&&d.error)||'failed'; }
-                }).catch(function(e){ status.style.color='#dc2626'; status.textContent='error'; });
-            }
-            function selectAllImp(on){ var b=document.querySelectorAll('.imp-sel'); for(var i=0;i<b.length;i++){ if(b[i].closest('.cred-row').style.display!=='none') b[i].checked=on; } }
-            function doImport(pageId,status){
-              status.style.color='#6b7280'; status.textContent='importing…';
-              return fetch('/import-contacts-json?page='+encodeURIComponent(pageId),{method:'POST'})
-                .then(function(r){return r.json();})
-                .then(function(d){ if(d&&d.ok){ status.style.color='#16a34a'; status.textContent='✓ +'+d.found+' ('+d.total+')'; } else { status.style.color='#dc2626'; status.textContent='✗ '+((d&&d.error)||'failed').slice(0,26); } })
-                .catch(function(e){ status.style.color='#dc2626'; status.textContent='✗ error'; });
-            }
-            function importOne(btn){ var row=btn.closest('.cred-row'); return doImport(row.getAttribute('data-pageid'), row.querySelector('.cred-status')); }
-            function importList(ids){
-              var prog=document.getElementById('imp-progress'); var i=0, done=0;
-              function next(){ if(i>=ids.length){ prog.textContent='Done — imported '+done+' of '+ids.length+' pages'; return; } var pageId=ids[i]; i++; prog.textContent='Importing '+i+' of '+ids.length+'…'; var row=document.querySelector('.cred-row[data-pageid="'+pageId+'"]'); var status=row?row.querySelector('.cred-status'):{style:{}}; doImport(pageId,status).then(function(){ done++; next(); }); }
-              next();
-            }
-            function importSelected(){ var sel=document.querySelectorAll('.imp-sel:checked'); var ids=[]; for(var i=0;i<sel.length;i++) ids.push(sel[i].value); if(!ids.length){ alert('Tick the pages you want first.'); return; } if(!confirm('Import contacts for '+ids.length+' selected page(s)?')) return; importList(ids); }
-            function importAllPagesContacts(){ var b=document.querySelectorAll('.imp-sel'); var ids=[]; for(var i=0;i<b.length;i++) ids.push(b[i].value); if(!ids.length) return; if(!confirm('Import contacts for ALL '+ids.length+' pages?')) return; importList(ids); }
-            function restoreBackup(input){
-              var file = input.files && input.files[0]; if(!file){ return; }
-              if(!confirm('Restore from "'+file.name+'"? This OVERWRITES all current data. A safety copy is saved first.')){ input.value=''; return; }
-              var reader = new FileReader(); reader.onload = function(){
-                var prog = document.getElementById('imp-progress'); if(prog){ prog.style.color='#6b7280'; prog.textContent='Restoring backup…'; }
-                fetch('/restore-backup',{method:'POST',headers:{'Content-Type':'application/json'},body:reader.result})
-                  .then(function(r){return r.json();})
-                  .then(function(d){ if(d&&d.ok){ alert('Restore complete — '+d.restored+' files restored. Page will reload.'); location.reload(); } else { alert('Restore failed: '+((d&&d.error)||'unknown error')); } })
-                  .catch(function(e){ alert('Restore error: '+e.message); });
-                input.value='';
-              }; reader.readAsText(file);
-            }
-          </script>
         `
       }
     </div>
