@@ -2147,6 +2147,7 @@ function renderPageView(page, req) {
           <div style="font-size:10px;color:#a5b4fc;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Quick Actions</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             ${randomizeBtn}
+            <a href="/send-now?page=${pid}" class="btn" style="background:#22c55e;color:#fff;margin-top:0;" onclick="return confirm('Send to ${fans.length} fans now?')">&#128640; Send Now</a>
             <a href="/import-contacts?page=${pid}" class="btn" style="background:#16a34a;color:#fff;margin-top:0;">&#128229; Import Contacts</a>
           </div>
         </div>
