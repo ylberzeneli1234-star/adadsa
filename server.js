@@ -1681,8 +1681,8 @@ function renderAllPagesView(pages, req) {
     const sendNowToggle = sendNowOn
       ? `<form action="/toggle-sendnow" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn" style="background:#f59e0b;">🚫 Pause SN</button></form>`
       : `<form action="/toggle-sendnow" method="POST" style="display:inline;margin:0;"><input type="hidden" name="pageId" value="${esc(p.pageId)}"/><button type="submit" class="qbtn qbtn-resume">✅ Resume SN</button></form>`;
-    return `<tr class="page-row" draggable="true" data-id="${esc(p.pageId)}">
-      <td style="width:28px;text-align:center;cursor:grab;color:#cbd5e1;font-size:18px;padding:10px 4px;" class="drag-handle" title="Drag to reorder">⠿</td>
+    return `<tr class="page-row" data-id="${esc(p.pageId)}">
+      <td style="width:28px;text-align:center;cursor:grab;color:#cbd5e1;font-size:18px;padding:10px 4px;" class="drag-handle" draggable="true" title="Drag to reorder">⠿</td>
       <td><strong>${esc(p.label)}</strong><br/><span style="font-size:11px;color:#6b7280;">${esc(p.pageId)}</span><br/>${groupBadge}</td>
       <td>${fans.length}</td>
       <td>${clicksToday} / ${clicks}</td>
@@ -1885,7 +1885,7 @@ function renderAllPagesView(pages, req) {
             </form>
           </div>
 
-          <table>
+          <table style="user-select:text;">
             <thead><tr><th style="width:28px;" title="Drag rows to reorder">⠿</th><th>Page / Group <span id="reorder-status" style="font-size:11px;font-weight:400;margin-left:8px;"></span></th><th>Fans</th><th>Clicks (today/total)</th><th>Messages</th><th>Send Progress</th><th>Actions</th></tr></thead>
             <tbody id="pages-tbody">${rows}</tbody>
           </table>
@@ -1926,6 +1926,7 @@ function renderAllPagesView(pages, req) {
         var dragging = null;
 
         tbody.addEventListener('dragstart', function(e) {
+          if (!e.target.classList.contains('drag-handle')) { e.preventDefault(); return; }
           var row = e.target.closest('tr.page-row');
           if (!row) return;
           dragging = row;
@@ -1934,10 +1935,9 @@ function renderAllPagesView(pages, req) {
         });
 
         tbody.addEventListener('dragend', function(e) {
-          var row = e.target.closest('tr.page-row');
-          if (row) row.style.opacity = '';
+          if (dragging) dragging.style.opacity = '';
           document.querySelectorAll('tr.page-row').forEach(function(r) {
-            r.style.borderTop = '';
+            r.style.borderTop = ''; r.style.borderBottom = '';
           });
           dragging = null;
         });
