@@ -2149,6 +2149,7 @@ function renderPageView(page, req) {
             ${randomizeBtn}
             <a href="/send-now?page=${pid}" class="btn" style="background:#22c55e;color:#fff;margin-top:0;" onclick="return confirm('Send to ${fans.length} fans now?')">&#128640; Send Now</a>
             <a href="/import-contacts?page=${pid}" class="btn" style="background:#16a34a;color:#fff;margin-top:0;">&#128229; Import Contacts</a>
+            <a href="/clear-fans?page=${pid}" class="btn" style="background:#dc2626;color:#fff;margin-top:0;" onclick="return confirm('CLEAR all ${fans.length} fans from ${esc(page.label)}? This cannot be undone!')">&#128465;&#65039; Clear Fans</a>
           </div>
         </div>
       </div>
