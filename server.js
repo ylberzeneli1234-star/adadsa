@@ -1895,7 +1895,49 @@ function renderAllPagesView(pages, req) {
 
     <script>
       (function() {
-        function pollAll() {
+        var allPageIds = ${JSON.stringify(pages.map(p => p.pageId))};
+      var allPageLabels = ${JSON.stringify(Object.fromEntries(pages.map(p => [p.pageId, p.label])))};
+      function clearAllFans() {
+        if (!confirm('CLEAR ALL FANS on ALL ' + allPageIds.length + ' pages? This cannot be undone!')) return;
+        if (!confirm('Are you absolutely sure? This deletes every fan list on every page.')) return;
+        var status = document.getElementById('bulk-ops-status');
+        status.style.color = '#6b7280'; status.textContent = 'Clearing...';
+        fetch('/clear-all-fans', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (d.ok) { status.style.color='#16a34a'; status.textContent='Cleared fans on '+d.cleared+' pages'; setTimeout(function(){ location.reload(); }, 1500); }
+            else { status.style.color='#dc2626'; status.textContent='Error: '+(d.error||'unknown'); }
+          }).catch(function(e){ status.style.color='#dc2626'; status.textContent='Error: '+e.message; });
+      }
+      function importAllPages() {
+        if (!confirm('Import contacts for ALL ' + allPageIds.length + ' pages? This will take a few minutes.')) return;
+        var status = document.getElementById('bulk-ops-status');
+        var i = 0, done = 0, failed = 0;
+        function next() {
+          if (i >= allPageIds.length) { status.style.color='#16a34a'; status.textContent='Done — imported '+done+' pages, '+failed+' failed'; return; }
+          var pid = allPageIds[i];
+          var label = allPageLabels[pid] || pid;
+          status.style.color='#6b7280'; status.textContent='Importing '+(i+1)+' / '+allPageIds.length+': '+label.slice(0,30)+'...';
+          i++;
+          fetch('/import-contacts-json?page='+encodeURIComponent(pid),{method:'POST'})
+            .then(function(r){return r.json();})
+            .then(function(d){ if(d&&d.ok) done++; else failed++; next(); })
+            .catch(function(){ failed++; next(); });
+        }
+        next();
+      }
+      function triggerRedeploy() {
+        if (!confirm('Redeploy Railway now? The bot will be offline for ~30 seconds.')) return;
+        var status = document.getElementById('bulk-ops-status');
+        status.style.color='#7c3aed'; status.textContent='Deploying...';
+        fetch('/redeploy', { method: 'POST' })
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            if (d.ok) { status.style.color='#16a34a'; status.textContent='Redeployment triggered — bot will restart in ~30s'; }
+            else { status.style.color='#dc2626'; status.textContent='Failed: '+(d.error||'check RAILWAY_DEPLOY_HOOK env var'); }
+          }).catch(function(e){ status.style.color='#dc2626'; status.textContent='Error: '+e.message; });
+      }
+      function pollAll() {
           var cells = document.querySelectorAll('.bp-cell');
           cells.forEach(function(cell) {
             var pid = cell.getAttribute('data-bp');
@@ -2471,6 +2513,29 @@ app.get('/', (req, res) => {
 // PAGE MANAGEMENT
 // ============================================
 // Bulk add pages from paste
+// Trigger Railway redeployment via deploy hook
+app.post('/redeploy', async (req, res) => {
+  const hook = process.env.RAILWAY_DEPLOY_HOOK;
+  if (!hook) return res.json({ ok: false, error: 'RAILWAY_DEPLOY_HOOK not set' });
+  try {
+    const r = await fetch(hook, { method: 'POST' });
+    if (r.ok) res.json({ ok: true });
+    else res.json({ ok: false, error: 'Railway returned ' + r.status });
+  } catch(e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// Clear fans for ALL pages at once
+app.post('/clear-all-fans', (req, res) => {
+  const pages = loadPages();
+  let cleared = 0;
+  pages.forEach(p => {
+    try { saveFansList(p.pageId, []); cleared++; } catch(e) {}
+  });
+  res.json({ ok: true, cleared });
+});
+
 app.post('/bulk-add-pages', (req, res) => {
   const pages = req.body.pages;
   if (!Array.isArray(pages) || !pages.length) return res.json({ ok: false, error: 'No pages provided' });
