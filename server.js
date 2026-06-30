@@ -1893,9 +1893,17 @@ function renderAllPagesView(pages, req) {
       }
     </div>
 
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;background:#fff;border-radius:8px;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+      <span style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;">All Pages:</span>
+      <button type="button" class="qbtn" style="background:#dc2626;" onclick="clearAllFans()">&#128465;&#65039; Clear ALL Fans</button>
+      <button type="button" class="qbtn" style="background:#2563eb;" onclick="importAllPages()">&#128229; Import ALL Pages</button>
+      ${process.env.RAILWAY_DEPLOY_HOOK ? `<button type="button" class="qbtn" style="background:#7c3aed;" onclick="triggerRedeploy()">&#128260; Redeploy Railway</button>` : ''}
+      <span id="bulk-ops-status" style="font-size:13px;font-weight:600;color:#6b7280;"></span>
+    </div>
+
     <script>
-      (function() {
-        var allPageIds = ${JSON.stringify(pages.map(p => p.pageId))};
+      // Global scope — accessible from onclick handlers
+      var allPageIds = ${JSON.stringify(pages.map(p => p.pageId))};
       var allPageLabels = ${JSON.stringify(Object.fromEntries(pages.map(p => [p.pageId, p.label])))};
       function clearAllFans() {
         if (!confirm('CLEAR ALL FANS on ALL ' + allPageIds.length + ' pages? This cannot be undone!')) return;
@@ -1937,7 +1945,11 @@ function renderAllPagesView(pages, req) {
             else { status.style.color='#dc2626'; status.textContent='Failed: '+(d.error||'check RAILWAY_DEPLOY_HOOK env var'); }
           }).catch(function(e){ status.style.color='#dc2626'; status.textContent='Error: '+e.message; });
       }
-      function pollAll() {
+    </script>
+
+    <script>
+      (function() {
+        function pollAll() {
           var cells = document.querySelectorAll('.bp-cell');
           cells.forEach(function(cell) {
             var pid = cell.getAttribute('data-bp');
