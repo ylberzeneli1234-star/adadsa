@@ -1839,6 +1839,14 @@ function renderAllPagesView(pages, req) {
       }
     </script>
 
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;background:#1a1d2e;border-radius:8px;padding:12px 16px;">
+      <span style="font-size:12px;font-weight:700;color:#a5b4fc;text-transform:uppercase;letter-spacing:0.5px;">All Pages:</span>
+      <button type="button" class="qbtn" style="background:#dc2626;" onclick="clearAllFans()">&#128465;&#65039; Clear ALL Fans</button>
+      <button type="button" class="qbtn" style="background:#2563eb;" onclick="importAllPages()">&#128229; Import ALL Pages</button>
+      ${process.env.RAILWAY_DEPLOY_HOOK ? `<button type="button" class="qbtn" style="background:#7c3aed;" onclick="triggerRedeploy()">&#128260; Redeploy Railway</button>` : `<button type="button" class="qbtn" style="background:#7c3aed;opacity:0.5;cursor:default;" title="Set RAILWAY_DEPLOY_HOOK env var to enable">&#128260; Redeploy</button>`}
+      <span id="bulk-ops-status" style="font-size:13px;font-weight:600;color:#a5b4fc;"></span>
+    </div>
+
     ${renderGroupManager(pages)}
 
     <div class="card">
@@ -1893,14 +1901,6 @@ function renderAllPagesView(pages, req) {
       }
     </div>
 
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;background:#fff;border-radius:8px;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
-      <span style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;">All Pages:</span>
-      <button type="button" class="qbtn" style="background:#dc2626;" onclick="clearAllFans()">&#128465;&#65039; Clear ALL Fans</button>
-      <button type="button" class="qbtn" style="background:#2563eb;" onclick="importAllPages()">&#128229; Import ALL Pages</button>
-      ${process.env.RAILWAY_DEPLOY_HOOK ? `<button type="button" class="qbtn" style="background:#7c3aed;" onclick="triggerRedeploy()">&#128260; Redeploy Railway</button>` : ''}
-      <span id="bulk-ops-status" style="font-size:13px;font-weight:600;color:#6b7280;"></span>
-    </div>
-
     <script>
       // Global scope — accessible from onclick handlers
       var allPageIds = ${JSON.stringify(pages.map(p => p.pageId))};
@@ -1918,21 +1918,43 @@ function renderAllPagesView(pages, req) {
           }).catch(function(e){ status.style.color='#dc2626'; status.textContent='Error: '+e.message; });
       }
       function importAllPages() {
-        if (!confirm('Import contacts for ALL ' + allPageIds.length + ' pages? This will take a few minutes.')) return;
+        if (!confirm('Import contacts for ALL ' + allPageIds.length + ' pages? Will run 10 at a time in parallel.')) return;
         var status = document.getElementById('bulk-ops-status');
-        var i = 0, done = 0, failed = 0;
-        function next() {
-          if (i >= allPageIds.length) { status.style.color='#16a34a'; status.textContent='Done — imported '+done+' pages, '+failed+' failed'; return; }
-          var pid = allPageIds[i];
-          var label = allPageLabels[pid] || pid;
-          status.style.color='#6b7280'; status.textContent='Importing '+(i+1)+' / '+allPageIds.length+': '+label.slice(0,30)+'...';
-          i++;
-          fetch('/import-contacts-json?page='+encodeURIComponent(pid),{method:'POST'})
-            .then(function(r){return r.json();})
-            .then(function(d){ if(d&&d.ok) done++; else failed++; next(); })
-            .catch(function(){ failed++; next(); });
+        var BATCH = 20;
+        var done = 0, failed = 0, processed = 0;
+        var total = allPageIds.length;
+        var batches = [];
+        for (var i = 0; i < total; i += BATCH) batches.push(allPageIds.slice(i, i + BATCH));
+        var bIdx = 0;
+        function runBatch() {
+          if (bIdx >= batches.length) {
+            status.style.color = '#16a34a';
+            status.textContent = 'Done — ' + done + ' imported, ' + failed + ' failed (' + total + ' pages)';
+            return;
+          }
+          var batch = batches[bIdx++];
+          status.style.color = '#6b7280';
+          status.textContent = 'Batch ' + bIdx + '/' + batches.length + ' — importing ' + batch.length + ' pages in parallel... (' + processed + '/' + total + ' done)';
+          fetch('/import-contacts-batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pageIds: batch })
+          })
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (d && d.results) {
+              d.results.forEach(function(r) {
+                processed++;
+                if (r.ok) done++; else failed++;
+              });
+            } else {
+              processed += batch.length; failed += batch.length;
+            }
+            runBatch();
+          })
+          .catch(function() { processed += batch.length; failed += batch.length; runBatch(); });
         }
-        next();
+        runBatch();
       }
       function triggerRedeploy() {
         if (!confirm('Redeploy Railway now? The bot will be offline for ~30 seconds.')) return;
@@ -3381,6 +3403,21 @@ app.post('/import-contacts-json', async (req, res) => {
   } catch (e) {
     res.json({ ok: false, error: e.message });
   }
+});
+
+// Batch import — multiple pages in parallel
+app.post('/import-contacts-batch', async (req, res) => {
+  const pageIds = Array.isArray(req.body.pageIds) ? req.body.pageIds : [];
+  if (!pageIds.length) return res.json({ ok: false, error: 'No pages' });
+  const results = await Promise.allSettled(
+    pageIds.map(pid =>
+      importContactsForPage(pid)
+        .then(r => ({ pid, ok: true, found: r.found, total: r.total }))
+        .catch(e => ({ pid, ok: false, error: e.message }))
+    )
+  );
+  const out = results.map(r => r.value || { pid: '?', ok: false, error: 'unknown' });
+  res.json({ ok: true, results: out });
 });
 
 app.get('/import-contacts', async (req, res) => {
