@@ -307,7 +307,10 @@ function loadLibrary() {
   if (!Array.isArray(redirectSets[DEFAULT_SET])) redirectSets[DEFAULT_SET] = [];
   if (!Array.isArray(redirectSets[SECOND_SET])) redirectSets[SECOND_SET] = [];
   const cardTemplates = Array.isArray(lib.cardTemplates) ? lib.cardTemplates : [];
-  const normalized = { photos, redirectSets, cardTemplates };
+  const titles = Array.isArray(lib.titles) ? lib.titles : [];
+  const subtitles = Array.isArray(lib.subtitles) ? lib.subtitles : [];
+  const buttonTexts = Array.isArray(lib.buttonTexts) ? lib.buttonTexts : [];
+  const normalized = { photos, redirectSets, cardTemplates, titles, subtitles, buttonTexts };
   if (!lib.redirectSets || !lib.cardTemplates) { try { saveLibrary(normalized); } catch {} }
   return normalized;
 }
@@ -402,6 +405,19 @@ function randomizePage(page, opts = {}) {
         updates.lastRedirect = newRedirect;
       }
     }
+  }
+  // Classic mode: also rotate title, subtitle, buttonText from shared pools
+  if (lib.titles && lib.titles.length) {
+    const newTitle = pickRandom(lib.titles, page.lastTitle || page.title);
+    if (newTitle) { updates.title = newTitle; updates.lastTitle = newTitle; }
+  }
+  if (lib.subtitles && lib.subtitles.length) {
+    const newSubtitle = pickRandom(lib.subtitles, page.lastSubtitle || page.subtitle);
+    if (newSubtitle) { updates.subtitle = newSubtitle; updates.lastSubtitle = newSubtitle; }
+  }
+  if (lib.buttonTexts && lib.buttonTexts.length) {
+    const newButton = pickRandom(lib.buttonTexts, page.lastButtonText || page.buttonText);
+    if (newButton) { updates.buttonText = newButton; updates.lastButtonText = newButton; }
   }
   if (Object.keys(updates).length) {
     return updatePage(page.pageId, updates);
@@ -1181,6 +1197,37 @@ function renderLibraryManager() {
             <h3 style="margin:0 0 4px;font-size:14px;">🔗 Redirect Sets</h3>
             ${setSections}
           </div>
+
+          <div style="margin-top:20px;border-top:1px solid #f1f5f9;padding-top:16px;">
+            <h3 style="margin:0 0 4px;font-size:14px;">🔄 Classic Mode Rotation Pools <span style="font-weight:400;color:#94a3b8;font-size:12px;">— randomize picks one from each pool automatically</span></h3>
+
+            ${[
+              { key: 'titles', label: 'Card Titles', emoji: '📝', placeholder: 'Sandra 58 💕\nJennifer 56 🌹\nRebecca 54 ❤️', hint: 'One per line — the name shown at the top of the card' },
+              { key: 'subtitles', label: 'Card Subtitles', emoji: '💬', placeholder: 'I live alone, may I send you a friend request?\nI\'m a widow 🖤 May I get to know you?', hint: 'One per line — the text under the name' },
+              { key: 'buttonTexts', label: 'Button Texts', emoji: '🔘', placeholder: 'My Photos 📞\nCome See Me 💋\nSee My Gallery 📸', hint: 'One per line — the button label fans click' }
+            ].map(({ key, label, emoji, placeholder, hint }) => {
+              const items = lib[key] || [];
+              const chips = items.map((item, i) =>
+                `<div style="display:inline-flex;align-items:center;gap:4px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:4px 8px;font-size:12px;max-width:100%;word-break:break-word;">
+                  <span style="color:#1a1d2e;">${esc(item)}</span>
+                  <a href="/library-remove-text?key=${encodeURIComponent(key)}&index=${i}" onclick="return confirm('Remove this item?')" style="color:#dc2626;text-decoration:none;font-weight:700;flex-shrink:0;">×</a>
+                </div>`
+              ).join('');
+              return `
+              <div style="margin-top:14px;border:1px solid #e2e8f0;border-left:4px solid #6366f1;border-radius:8px;padding:12px;background:#fafbfc;">
+                <h4 style="margin:0 0 6px;font-size:13px;color:#1a1d2e;">${emoji} ${esc(label)} <span style="font-weight:400;color:#94a3b8;">(${items.length} items)</span></h4>
+                <div style="font-size:11px;color:#6b7280;margin-bottom:8px;">${esc(hint)}</div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
+                  ${chips || '<span style="color:#94a3b8;font-size:12px;">No items yet — add some below.</span>'}
+                </div>
+                <form action="/library-add-text" method="POST" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+                  <input type="hidden" name="key" value="${esc(key)}"/>
+                  <textarea name="items" placeholder="${esc(placeholder)}" style="flex:1;min-width:240px;min-height:60px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
+                  <button type="submit" class="btn btn-green" style="white-space:nowrap;">+ Add to ${esc(label)}</button>
+                </form>
+              </div>`;
+            }).join('')}
+          </div>
         </div>
       </details>
     </div>`;
@@ -1843,9 +1890,52 @@ function renderAllPagesView(pages, req) {
       <span style="font-size:12px;font-weight:700;color:#a5b4fc;text-transform:uppercase;letter-spacing:0.5px;">All Pages:</span>
       <button type="button" class="qbtn" style="background:#dc2626;" onclick="clearAllFans()">&#128465;&#65039; Clear ALL Fans</button>
       <button type="button" class="qbtn" style="background:#2563eb;" onclick="importAllPages()">&#128229; Import ALL Pages</button>
-      ${process.env.RAILWAY_DEPLOY_HOOK ? `<button type="button" class="qbtn" style="background:#7c3aed;" onclick="triggerRedeploy()">&#128260; Redeploy Railway</button>` : `<button type="button" class="qbtn" style="background:#7c3aed;opacity:0.5;cursor:default;" title="Set RAILWAY_DEPLOY_HOOK env var to enable">&#128260; Redeploy</button>`}
+      <button type="button" class="qbtn" style="background:#7c3aed;" onclick="triggerRedeploy()">&#128260; Redeploy Railway</button>
       <span id="bulk-ops-status" style="font-size:13px;font-weight:600;color:#a5b4fc;"></span>
     </div>
+
+    <div style="background:#fff;border-radius:8px;padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06);margin-bottom:16px;">
+      <div style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;">&#128269; Find Fan by PSID — open inbox to message manually</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input type="text" id="psid-search-input" placeholder="Paste PSID (e.g. 1234567890)" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-family:monospace;font-size:13px;"/>
+        <button type="button" class="qbtn" style="background:#6366f1;" onclick="findPsid()">&#128269; Find</button>
+      </div>
+      <div id="psid-result" style="margin-top:10px;"></div>
+    </div>
+    <script>
+      var psidPageMap = ${JSON.stringify((() => {
+        const map = {};
+        pages.forEach(p => { map[p.pageId] = { label: p.label, pageId: p.pageId }; });
+        return map;
+      })())};
+      function findPsid() {
+        var psid = (document.getElementById('psid-search-input').value || '').trim();
+        var result = document.getElementById('psid-result');
+        if (!psid) { result.innerHTML = ''; return; }
+        result.innerHTML = '<span style="color:#6b7280;font-size:13px;">Searching...</span>';
+        fetch('/find-psid?psid=' + encodeURIComponent(psid))
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            if (!d.pages || !d.pages.length) {
+              result.innerHTML = '<span style="color:#dc2626;font-size:13px;">&#10060; PSID not found in any page fan list.</span>';
+              return;
+            }
+            var rows = d.pages.map(function(p) {
+              var inboxUrl = 'https://business.facebook.com/latest/inbox/messenger?page_id=' + encodeURIComponent(p.pageId);
+              var threadUrl = 'https://business.facebook.com/latest/inbox/messenger?page_id=' + encodeURIComponent(p.pageId) + '&selected_item_id=' + encodeURIComponent(psid);
+              return '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:7px;margin-bottom:6px;flex-wrap:wrap;">'
+                + '<div style="flex:1;min-width:150px;"><div style="font-weight:700;font-size:14px;color:#1a1d2e;">' + escHtml(p.label) + '</div><div style="font-size:11px;color:#6b7280;font-family:monospace;">' + escHtml(p.pageId) + '</div></div>'
+                + '<a href="' + threadUrl + '" target="_blank" class="qbtn" style="background:#1877f2;text-decoration:none;">&#128172; Open Conversation</a>'
+                + '<a href="' + inboxUrl + '" target="_blank" class="qbtn" style="background:#6b7280;text-decoration:none;">&#128236; Page Inbox</a>'
+                + '</div>';
+            }).join('');
+            result.innerHTML = '<div style="font-size:12px;color:#166534;font-weight:600;margin-bottom:6px;">&#9989; Found on ' + d.pages.length + ' page(s):</div>' + rows;
+          })
+          .catch(function(e){ result.innerHTML = '<span style="color:#dc2626;">Error: ' + escHtml(e.message) + '</span>'; });
+      }
+      function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+      document.getElementById('psid-search-input').addEventListener('keydown', function(e){ if(e.key==='Enter') findPsid(); });
+    </script>
 
     ${renderGroupManager(pages)}
 
@@ -1964,7 +2054,7 @@ function renderAllPagesView(pages, req) {
           .then(function(r){ return r.json(); })
           .then(function(d){
             if (d.ok) { status.style.color='#16a34a'; status.textContent='Redeployment triggered — bot will restart in ~30s'; }
-            else { status.style.color='#dc2626'; status.textContent='Failed: '+(d.error||'check RAILWAY_DEPLOY_HOOK env var'); }
+            else { status.style.color='#dc2626'; status.textContent='Failed: '+(d.error||'check RAILWAY_API_TOKEN + RAILWAY_SERVICE_ID env vars'); }
           }).catch(function(e){ status.style.color='#dc2626'; status.textContent='Error: '+e.message; });
       }
     </script>
@@ -2226,6 +2316,7 @@ function renderPageView(page, req) {
             <a href="/send-now?page=${pid}" class="btn" style="background:#22c55e;color:#fff;margin-top:0;" onclick="return confirm('Send to ${fans.length} fans now?')">&#128640; Send Now</a>
             <a href="/import-contacts?page=${pid}" class="btn" style="background:#16a34a;color:#fff;margin-top:0;">&#128229; Import Contacts</a>
             <a href="/clear-fans?page=${pid}" class="btn" style="background:#dc2626;color:#fff;margin-top:0;" onclick="return confirm('CLEAR all ${fans.length} fans from ${esc(page.label)}? This cannot be undone!')">&#128465;&#65039; Clear Fans</a>
+            <a href="https://business.facebook.com/latest/inbox/messenger?page_id=${pid}" target="_blank" class="btn" style="background:#1877f2;color:#fff;margin-top:0;">&#128172; Open FB Inbox</a>
           </div>
         </div>
       </div>
@@ -2547,14 +2638,32 @@ app.get('/', (req, res) => {
 // PAGE MANAGEMENT
 // ============================================
 // Bulk add pages from paste
-// Trigger Railway redeployment via deploy hook
+// Trigger Railway redeployment via GraphQL API
 app.post('/redeploy', async (req, res) => {
-  const hook = process.env.RAILWAY_DEPLOY_HOOK;
-  if (!hook) return res.json({ ok: false, error: 'RAILWAY_DEPLOY_HOOK not set' });
+  const token = process.env.RAILWAY_API_TOKEN;
+  const serviceId = process.env.RAILWAY_SERVICE_ID;
+  if (!token) return res.json({ ok: false, error: 'RAILWAY_API_TOKEN not set' });
+  if (!serviceId) return res.json({ ok: false, error: 'RAILWAY_SERVICE_ID not set' });
   try {
-    const r = await fetch(hook, { method: 'POST' });
-    if (r.ok) res.json({ ok: true });
-    else res.json({ ok: false, error: 'Railway returned ' + r.status });
+    // Step 1: get latest deployment ID
+    const r1 = await fetch('https://backboard.railway.app/graphql/v2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ query: `query { service(id: "${serviceId}") { deployments(first: 1) { edges { node { id } } } } }` })
+    });
+    const d1 = await r1.json();
+    if (d1.errors) return res.json({ ok: false, error: d1.errors[0].message });
+    const depId = d1.data && d1.data.service && d1.data.service.deployments && d1.data.service.deployments.edges[0] && d1.data.service.deployments.edges[0].node.id;
+    if (!depId) return res.json({ ok: false, error: 'No deployment found for this service' });
+    // Step 2: redeploy it
+    const r2 = await fetch('https://backboard.railway.app/graphql/v2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ query: `mutation { deploymentRedeploy(id: "${depId}") { id } }` })
+    });
+    const d2 = await r2.json();
+    if (d2.errors) return res.json({ ok: false, error: d2.errors[0].message });
+    res.json({ ok: true });
   } catch(e) {
     res.json({ ok: false, error: e.message });
   }
@@ -2910,6 +3019,30 @@ app.get('/set-active-photo', (req, res) => {
 // ============================================
 // SHARED LIBRARY
 // ============================================
+app.post('/library-add-text', (req, res) => {
+  const lib = loadLibrary();
+  const key = req.body.key;
+  if (!['titles', 'subtitles', 'buttonTexts'].includes(key)) return res.redirect('/?page=all&error=Invalid+key');
+  const raw = req.body.items || '';
+  const items = raw.split('\n').map(s => s.trim()).filter(Boolean);
+  lib[key] = lib[key] || [];
+  let added = 0;
+  items.forEach(item => { if (!lib[key].includes(item)) { lib[key].push(item); added++; } });
+  saveLibrary(lib);
+  res.redirect(`/?page=all&lib_msg=${encodeURIComponent('Added ' + added + ' item(s) to ' + key)}`);
+});
+
+app.get('/library-remove-text', (req, res) => {
+  const lib = loadLibrary();
+  const key = req.query.key;
+  if (!['titles', 'subtitles', 'buttonTexts'].includes(key)) return res.redirect('/?page=all&error=Invalid+key');
+  lib[key] = lib[key] || [];
+  const i = parseInt(req.query.index);
+  if (i >= 0 && i < lib[key].length) lib[key].splice(i, 1);
+  saveLibrary(lib);
+  res.redirect('/?page=all&lib_msg=' + encodeURIComponent('Item removed from ' + key));
+});
+
 app.post('/library-add-photo', (req, res) => {
   const lib = loadLibrary();
   const raw = req.body.photoUrls || req.body.photoUrl || '';
@@ -3395,6 +3528,16 @@ async function importContactsForPage(pageId) {
   }
   return { found: all.length, total: combined.length };
 }
+
+// Find which pages have a given PSID as a fan
+app.get('/find-psid', (req, res) => {
+  const psid = (req.query.psid || '').trim();
+  if (!psid) return res.json({ pages: [] });
+  const pages = loadPages();
+  const found = pages.filter(p => loadFans(p.pageId).includes(psid))
+    .map(p => ({ pageId: p.pageId, label: p.label }));
+  res.json({ pages: found });
+});
 
 app.post('/import-contacts-json', async (req, res) => {
   try {
