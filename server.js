@@ -345,8 +345,10 @@ function templatesForSet(lib, setName) {
 }
 
 function pickTemplatePhoto(t) {
-  const pics = (Array.isArray(t.photos) && t.photos.length) ? t.photos : (t.photo ? [t.photo] : []);
-  if (!pics.length) return '';
+  // Use activePhotos if set, otherwise fall back to all photos
+  const active = (Array.isArray(t.activePhotos) && t.activePhotos.length) ? t.activePhotos : null;
+  const pics = active || ((Array.isArray(t.photos) && t.photos.length) ? t.photos : (t.photo ? [t.photo] : []));
+  if (!pics.length) return t.photo || '';
   return pics[Math.floor(Math.random() * pics.length)];
 }
 
@@ -1319,6 +1321,7 @@ function renderTemplateManager(req) {
         </div>
         <label style="margin-top:10px;display:block;">Photos</label>
         <input type="hidden" name="photos" id="f-photos" value="[]"/>
+        <input type="hidden" name="activePhotos" id="f-active-photos" value="[]"/>
         <div style="display:flex;gap:8px;margin-top:4px;">
           <input type="text" id="f-photo-add" placeholder="https://i.imgur.com/xxxxx.png" style="flex:1;font-family:monospace;font-size:12px;"/>
           <button type="button" class="btn btn-green" style="white-space:nowrap;" onclick="addPhotoToForm()">+ Add photo</button>
@@ -1370,56 +1373,39 @@ function renderTemplateManager(req) {
     </div>
     <script>
       var formPhotos = [];
+      var formActivePhotos = {}; // url -> false means inactive, default is active
       function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
       function imgFail(el){ el.style.display='none'; var p=el.parentElement; p.style.color='#94a3b8'; p.style.fontSize='10px'; p.textContent='no img'; }
-      function uploadImageFile(file) {
-        if (!file || !file.type || file.type.indexOf('image/') !== 0) { alert('Please drop an image file.'); return; }
-        var dz = document.getElementById('f-dropzone');
-        var orig = '📂 Drag & drop a photo here (or click) to upload to Imgur';
-        dz.textContent = '⏳ Uploading to Imgur...';
-        var reader = new FileReader();
-        reader.onload = function() {
-          fetch('/upload-image', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: reader.result }) })
-            .then(function(r){ return r.json(); })
-            .then(function(d){
-              if (d && d.url) { formPhotos.push(d.url); renderPhotoGrid(); dz.textContent = '✅ Added! Drop another, or click.'; setTimeout(function(){ dz.textContent = orig; }, 1800); }
-              else { dz.textContent = orig; alert('Upload failed: ' + ((d && d.error) || 'unknown error')); }
-            })
-            .catch(function(e){ dz.textContent = orig; alert('Upload error: ' + e.message); });
-        };
-        reader.readAsDataURL(file);
-      }
-      function setupDropzone() {
-        var dz = document.getElementById('f-dropzone');
-        if (!dz) return;
-        var fi = document.createElement('input');
-        fi.type = 'file'; fi.accept = 'image/*'; fi.style.display = 'none';
-        document.body.appendChild(fi);
-        dz.addEventListener('click', function(){ fi.click(); });
-        fi.addEventListener('change', function(){ if (fi.files[0]) { uploadImageFile(fi.files[0]); fi.value = ''; } });
-        dz.addEventListener('dragover', function(e){ e.preventDefault(); dz.style.background = '#eef2ff'; });
-        dz.addEventListener('dragleave', function(e){ e.preventDefault(); dz.style.background = 'transparent'; });
-        dz.addEventListener('drop', function(e){ e.preventDefault(); dz.style.background = 'transparent'; if (e.dataTransfer.files[0]) uploadImageFile(e.dataTransfer.files[0]); });
+      function togglePhotoActive(u) {
+        formActivePhotos[u] = (formActivePhotos[u] === false) ? true : false;
+        renderPhotoGrid();
       }
       function renderPhotoGrid() {
         document.getElementById('f-photos').value = JSON.stringify(formPhotos);
+        var activeList = formPhotos.filter(function(u){ return formActivePhotos[u] !== false; });
+        var ai = document.getElementById('f-active-photos'); if (ai) ai.value = JSON.stringify(activeList);
         var grid = document.getElementById('f-photo-grid');
         grid.innerHTML = formPhotos.map(function(u, i){
           var uid = 'pgurl_' + i;
-          return '<div style="border:2px solid #e2e8f0;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,0.06);">'
-            + '<div style="position:relative;aspect-ratio:1/1;background:#f1f5f9;">'
-            + '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="imgFail(this)"/>'
-            + '<button type="button" class="pg-remove-btn" data-idx="'+i+'" style="position:absolute;top:7px;right:7px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:28px;height:28px;font-size:16px;line-height:1;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.3);">\u00d7</button>'
-            + '<div style="position:absolute;bottom:7px;left:7px;background:rgba(0,0,0,0.55);color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:8px;">Photo '+(i+1)+'</div>'
-            + '</div>'
-            + '<div style="padding:8px;background:#f8fafc;border-top:1px solid #e2e8f0;">'
-            + '<input id="'+uid+'" type="text" value="'+escAttr(u)+'" readonly style="width:100%;font-size:10px;font-family:monospace;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#1e40af;cursor:pointer;" title="Click to select full URL" onclick="this.select();"/>'
-            + '<button type="button" class="pg-copy-btn" data-uid="'+uid+'" style="width:100%;margin-top:5px;background:#6b7280;color:#fff;border:none;border-radius:5px;font-size:11px;font-weight:600;padding:5px;cursor:pointer;">📋 Copy URL</button>'
-            + '</div>'
-            + '</div>';
+          var isActive = formActivePhotos[u] !== false;
+          var border = isActive ? '#22c55e' : '#e2e8f0';
+          var opacity = isActive ? '1' : '0.4';
+          var btnBg = isActive ? 'rgba(22,163,74,0.92)' : 'rgba(100,100,100,0.8)';
+          var btnLabel = isActive ? '&#9989; Active' : '&#11036;&#65038; Inactive';
+          return '<div style="border:2px solid '+border+';border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,0.06);">'+
+            '<div style="position:relative;aspect-ratio:1/1;background:#f1f5f9;">'+
+            '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;display:block;opacity:'+opacity+';" onerror="imgFail(this)"/>'+
+            '<button type="button" class="pg-remove-btn" data-idx="'+i+'" style="position:absolute;top:7px;right:7px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:28px;height:28px;font-size:16px;line-height:1;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.3);">\u00d7</button>'+
+            '<button type="button" class="pg-toggle-btn" data-url="'+escAttr(u)+'" style="position:absolute;bottom:7px;left:7px;background:'+btnBg+';color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:700;padding:4px 10px;cursor:pointer;">'+btnLabel+'</button>'+
+            '</div>'+
+            '<div style="padding:8px;background:#f8fafc;border-top:1px solid #e2e8f0;">'+
+            '<input id="'+uid+'" type="text" value="'+escAttr(u)+'" readonly style="width:100%;font-size:10px;font-family:monospace;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#1e40af;cursor:pointer;" title="Click to select full URL" onclick="this.select();"/>'+
+            '<button type="button" class="pg-copy-btn" data-uid="'+uid+'" style="width:100%;margin-top:5px;background:#6b7280;color:#fff;border:none;border-radius:5px;font-size:11px;font-weight:600;padding:5px;cursor:pointer;">\ud83d\udccb Copy URL</button>'+
+            '</div>'+
+            '</div>';
         }).join('') || '<span style="color:#94a3b8;font-size:12px;">No photos added yet.</span>';
       }
-      function addPhotoToForm() { var inp = document.getElementById('f-photo-add'); var v = (inp.value || '').trim(); if (!v) return; formPhotos.push(v); inp.value = ''; renderPhotoGrid(); }
+      function addPhotoToForm() { var inp = document.getElementById('f-photo-add'); var v = (inp.value || '').trim(); if (!v) return; formPhotos.push(v); formActivePhotos[v] = true; inp.value = ''; renderPhotoGrid(); }
       function removePhotoFromForm(i) { formPhotos.splice(i, 1); renderPhotoGrid(); }
       function validateTmplForm() { if (!formPhotos.length) { alert('Add at least one photo.'); return false; } return true; }
       function dupTmpl(id, toSet) {
@@ -1536,6 +1522,10 @@ function renderTemplateManager(req) {
         document.getElementById('f-title').value = t.title || '';
         document.getElementById('f-subtitle').value = t.subtitle || '';
         formPhotos = (Array.isArray(t.photos) && t.photos.length) ? t.photos.slice() : (t.photo ? [t.photo] : []);
+        // Load active/inactive state
+        formActivePhotos = {};
+        var active = Array.isArray(t.activePhotos) && t.activePhotos.length ? t.activePhotos : formPhotos.slice();
+        formPhotos.forEach(function(u){ formActivePhotos[u] = active.includes(u); });
         renderPhotoGrid();
         document.getElementById('f-button').value = t.buttonText || '';
         document.getElementById('tmpl-form').action = '/template-edit';
@@ -1618,7 +1608,7 @@ function renderTemplateManager(req) {
       document.addEventListener('change', function(e){ if (e.target && e.target.classList && e.target.classList.contains('tmpl-sel')) updateSelCount(); });
       // Button click delegation — avoids ALL quoting issues with onclick attributes
       document.addEventListener('click', function(e) {
-        var btn = e.target.closest('.tmpl-edit-btn, .tmpl-dup-btn, .tmpl-link-btn, .pg-copy-btn, .pg-remove-btn, .link-pick-btn, .link-modal-close');
+        var btn = e.target.closest('.tmpl-edit-btn, .tmpl-dup-btn, .tmpl-link-btn, .pg-copy-btn, .pg-remove-btn, .pg-toggle-btn, .link-pick-btn, .link-modal-close');
         if (!btn) return;
         if (btn.classList.contains('tmpl-edit-btn')) { editTmpl(btn.getAttribute('data-id')); }
         else if (btn.classList.contains('tmpl-dup-btn')) { dupTmpl(btn.getAttribute('data-id'), btn.getAttribute('data-otherset')); }
@@ -1627,7 +1617,8 @@ function renderTemplateManager(req) {
           var el = document.getElementById(btn.getAttribute('data-uid'));
           if (el) { el.select(); document.execCommand('copy'); btn.textContent = '✓ Copied!'; btn.style.background = '#16a34a'; setTimeout(function(){ btn.textContent = '📋 Copy URL'; btn.style.background = '#6b7280'; }, 1400); }
         }
-        else if (btn.classList.contains('pg-remove-btn')) { removePhotoFromForm(parseInt(btn.getAttribute('data-idx'))); }
+        else if (btn.classList.contains('pg-remove-btn')) { var idx=parseInt(btn.getAttribute('data-idx')); var url=formPhotos[idx]; formPhotos.splice(idx,1); if(url) delete formActivePhotos[url]; renderPhotoGrid(); }
+        else if (btn.classList.contains('pg-toggle-btn')) { var url=btn.getAttribute('data-url'); if(url){ formActivePhotos[url]=(formActivePhotos[url]===false)?true:false; renderPhotoGrid(); } }
         else if (btn.classList.contains('link-pick-btn')) {
           var srcId = btn.getAttribute('data-src');
           var partnerId = btn.getAttribute('data-partner');
@@ -3225,7 +3216,17 @@ app.post('/template-edit', (req, res) => {
   if (b.subtitle !== undefined) t.subtitle = b.subtitle.trim();
   if (b.photos !== undefined) {
     const photos = parsePhotos(b.photos, b.photo);
-    if (photos.length) { t.photos = photos; t.photo = photos[0]; }
+    if (photos.length) {
+      t.photos = photos;
+      t.photo = photos[0];
+      // Save activePhotos — if submitted, use them; otherwise keep existing or default to all
+      if (b.activePhotos) {
+        try {
+          const ap = JSON.parse(b.activePhotos);
+          t.activePhotos = Array.isArray(ap) && ap.length ? ap : photos;
+        } catch { t.activePhotos = photos; }
+      }
+    }
   } else if (b.photo && b.photo.trim()) {
     t.photo = b.photo.trim(); t.photos = [t.photo];
   }
