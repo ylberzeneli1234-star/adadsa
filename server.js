@@ -1380,6 +1380,10 @@ function renderTemplateManager(req) {
         formActivePhotos[u] = (formActivePhotos[u] === false) ? true : false;
         renderPhotoGrid();
       }
+      function togglePhotoAtIdx(idx) {
+        var u = formPhotos[idx];
+        if (u !== undefined) { formActivePhotos[u] = (formActivePhotos[u] === false) ? true : false; renderPhotoGrid(); }
+      }
       function renderPhotoGrid() {
         document.getElementById('f-photos').value = JSON.stringify(formPhotos);
         var activeList = formPhotos.filter(function(u){ return formActivePhotos[u] !== false; });
@@ -1395,8 +1399,8 @@ function renderTemplateManager(req) {
           return '<div style="border:2px solid '+border+';border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,0.06);">'+
             '<div style="position:relative;aspect-ratio:1/1;background:#f1f5f9;">'+
             '<img src="'+escAttr(u)+'" style="width:100%;height:100%;object-fit:cover;display:block;opacity:'+opacity+';" onerror="imgFail(this)"/>'+
-            '<button type="button" class="pg-remove-btn" data-idx="'+i+'" style="position:absolute;top:7px;right:7px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:28px;height:28px;font-size:16px;line-height:1;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.3);">\u00d7</button>'+
-            '<button type="button" class="pg-toggle-btn" data-url="'+escAttr(u)+'" style="position:absolute;bottom:7px;left:7px;background:'+btnBg+';color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:700;padding:4px 10px;cursor:pointer;">'+btnLabel+'</button>'+
+            '<button type="button" onclick="removePhotoFromForm('+i+')" style="position:absolute;top:7px;right:7px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:28px;height:28px;font-size:16px;line-height:1;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.3);z-index:2;">\u00d7</button>'+
+            '<button type="button" onclick="togglePhotoAtIdx('+i+')" style="position:absolute;bottom:7px;left:7px;background:'+btnBg+';color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:700;padding:4px 10px;cursor:pointer;z-index:2;">'+btnLabel+'</button>'+
             '</div>'+
             '<div style="padding:8px;background:#f8fafc;border-top:1px solid #e2e8f0;">'+
             '<input id="'+uid+'" type="text" value="'+escAttr(u)+'" readonly style="width:100%;font-size:10px;font-family:monospace;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#1e40af;cursor:pointer;" title="Click to select full URL" onclick="this.select();"/>'+
@@ -1406,7 +1410,7 @@ function renderTemplateManager(req) {
         }).join('') || '<span style="color:#94a3b8;font-size:12px;">No photos added yet.</span>';
       }
       function addPhotoToForm() { var inp = document.getElementById('f-photo-add'); var v = (inp.value || '').trim(); if (!v) return; formPhotos.push(v); formActivePhotos[v] = true; inp.value = ''; renderPhotoGrid(); }
-      function removePhotoFromForm(i) { formPhotos.splice(i, 1); renderPhotoGrid(); }
+      function removePhotoFromForm(i) { var u=formPhotos[i]; formPhotos.splice(i, 1); if(u) delete formActivePhotos[u]; renderPhotoGrid(); }
       function validateTmplForm() { if (!formPhotos.length) { alert('Add at least one photo.'); return false; } return true; }
       function dupTmpl(id, toSet) {
         var t = getTmpl(id); if (!t) return;
