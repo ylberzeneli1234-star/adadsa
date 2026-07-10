@@ -1271,7 +1271,7 @@ function renderTemplateManager(req) {
           <div style="font-size:12px;color:#6b7280;margin:3px 0;line-height:1.5;">${esc(t.subtitle || '(no subtitle)')}</div>
           <div style="font-size:11px;color:#94a3b8;font-family:monospace;margin-top:4px;word-break:break-all;">🔘 ${esc(t.buttonText)} · 🔗 ${esc((t.redirect || '(no redirect)').replace(/^https?:\/\//, ''))}</div>
           <div style="display:flex;gap:6px;margin-top:10px;">
-            <button type="button" class="qbtn tmpl-edit-btn" data-id="${t.id}" style="background:#6366f1;flex:1;">✏️ Edit</button>
+            <button type="button" class="qbtn" onclick="editTmpl('${t.id}')" style="background:#6366f1;flex:1;">✏️ Edit</button>
             <button type="button" class="qbtn tmpl-dup-btn" data-id="${t.id}" data-otherset="${esc(otherSet)}" style="background:#0ea5e9;" title="Duplicate + link to ${esc(otherSet)}">⧉🔗</button>
             ${!isLinked ? `<button type="button" class="qbtn tmpl-link-btn" data-id="${t.id}" data-otherset="${esc(otherSet)}" style="background:#16a34a;" title="Link to existing ${esc(otherSet)} card">🔗</button>` : ''}
             <a href="/template-delete?id=${t.id}" onclick="return confirm('Delete this template?')" class="qbtn" style="background:#dc2626;">🗑️</a>
@@ -1572,8 +1572,15 @@ function renderTemplateManager(req) {
         });
         if (linkedCount > 0) document.getElementById('f-submit').textContent = '💾 Save + Sync to ' + linkedCount + ' linked card(s)';
 
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        } catch(err) { alert('Edit error: ' + err.message); }
+        // Scroll to top instantly and flash the form so user sees it
+        window.scrollTo({ top: 0, behavior: 'instant' });
+        var formEl = document.getElementById('tmpl-form');
+        if (formEl) {
+          formEl.style.transition = 'box-shadow 0.2s';
+          formEl.style.boxShadow = '0 0 0 3px #6366f1';
+          setTimeout(function(){ formEl.style.boxShadow = ''; }, 1000);
+        }
+        } catch(err) { alert('Edit error: ' + err.message + '\nStack: ' + err.stack); }
       }
       function resetForm() {
         document.getElementById('tmpl-form').reset();
