@@ -1580,7 +1580,7 @@ function renderTemplateManager(req) {
           formEl.style.boxShadow = '0 0 0 3px #6366f1';
           setTimeout(function(){ formEl.style.boxShadow = ''; }, 1000);
         }
-        } catch(err) { alert('Edit error: ' + err.message + '\nStack: ' + err.stack); }
+        } catch(err) { alert('Edit error: ' + err.message); }
       }
       function resetForm() {
         document.getElementById('tmpl-form').reset();
