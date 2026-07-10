@@ -1517,15 +1517,15 @@ function renderTemplateManager(req) {
         summary.innerHTML = parts.length ? parts.join('<br/>') : '⚠️ Nothing recognized — check format';
       }
       function editTmpl(id) {
-        var t = getTmpl(id); if (!t) return;
+        try {
+        var t = getTmpl(id); if (!t) { alert('Template not found: ' + id); return; }
         document.getElementById('f-id').value = t.id;
         document.getElementById('f-title').value = t.title || '';
         document.getElementById('f-subtitle').value = t.subtitle || '';
         formPhotos = (Array.isArray(t.photos) && t.photos.length) ? t.photos.slice() : (t.photo ? [t.photo] : []);
-        // Load active/inactive state
         formActivePhotos = {};
-        var active = Array.isArray(t.activePhotos) && t.activePhotos.length ? t.activePhotos : formPhotos.slice();
-        formPhotos.forEach(function(u){ formActivePhotos[u] = active.includes(u); });
+        var activeArr = (Array.isArray(t.activePhotos) && t.activePhotos.length) ? t.activePhotos : null;
+        formPhotos.forEach(function(u){ formActivePhotos[u] = activeArr ? (activeArr.indexOf(u) !== -1) : true; });
         renderPhotoGrid();
         document.getElementById('f-button').value = t.buttonText || '';
         document.getElementById('tmpl-form').action = '/template-edit';
@@ -1573,6 +1573,7 @@ function renderTemplateManager(req) {
         if (linkedCount > 0) document.getElementById('f-submit').textContent = '💾 Save + Sync to ' + linkedCount + ' linked card(s)';
 
         window.scrollTo({ top: 0, behavior: 'smooth' });
+        } catch(err) { alert('Edit error: ' + err.message); }
       }
       function resetForm() {
         document.getElementById('tmpl-form').reset();
