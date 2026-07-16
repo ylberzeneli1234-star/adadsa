@@ -696,6 +696,17 @@ function sendCard(page, psid, opts = {}) {
   });
 }
 
+function sendTextMessage(page, psid, text) {
+  return fetch(`https://graph.facebook.com/v2.6/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recipient: { id: psid }, message: { text } })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { trackMessage(page.pageId, false); }
+    else { trackMessage(page.pageId, true); }
+    return data;
+  }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+}
+
 // ============================================
 // BROADCAST PROGRESS TRACKER
 // ============================================
@@ -725,7 +736,13 @@ function broadcastToPage(page, opts = {}) {
   startBroadcastTracking(page.pageId, fans.length, 'card');
   fans.forEach((psid, i) => {
     setTimeout(async () => {
-      try { await sendCard(page, psid, opts); } catch {}
+      try {
+        if (opts.textOnly && opts.text) {
+          await sendTextMessage(page, psid, opts.text);
+        } else {
+          await sendCard(page, psid, opts);
+        }
+      } catch {}
       tickBroadcast(page.pageId);
     }, i * spacing);
   });
@@ -2471,25 +2488,61 @@ function renderPageView(page, req) {
 
     <div class="card">
       <h2>Template Manager</h2>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-        <div style="background:#eef6ff;border:1px solid #b5d4f4;border-radius:8px;padding:12px;">
-          <h3 style="margin:0 0 8px;color:#0c447c;font-size:14px;">Template 1: Photo Card</h3>
-          <div style="background:#fff;border-radius:6px;padding:8px;margin-bottom:10px;border:1px solid #d1d5db;">
-            <div style="font-size:11px;font-weight:600;color:#1a1d2e;">${esc(page.title || '(no title)')}</div>
-            <div style="font-size:10px;color:#4a5568;margin:2px 0;">${esc((page.subtitle || '').slice(0, 50))}</div>
+
+      <!-- Card 1 -->
+      <div style="background:#eef6ff;border:1px solid #b5d4f4;border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h3 style="margin:0 0 10px;color:#0c447c;font-size:14px;">📸 Card 1: Photo Card</h3>
+        <div style="background:#fff;border-radius:6px;padding:8px;margin-bottom:10px;border:1px solid #d1d5db;font-size:12px;">
+          <strong>${esc(page.title || '(no title)')}</strong><br/>
+          <span style="color:#4a5568;">${esc((page.subtitle || '').slice(0, 60))}</span>
+        </div>
+        <a href="/send-now?page=${pid}" class="btn btn-green" style="display:block;text-align:center;margin:0;" onclick="return confirm('Send Card 1 to ${fans.length} fans?')">🚀 Send Card 1 to All</a>
+      </div>
+
+      <!-- Card 2 -->
+      <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h3 style="margin:0 0 10px;color:#166534;font-size:14px;">📸 Card 2: Photo Card (independent)</h3>
+        <form action="/update-card2?page=${pid}" method="POST" style="margin-bottom:10px;">
+          <div class="row" style="margin-bottom:8px;">
+            <div><label style="font-size:12px;">Title</label><input name="title2" value="${esc(page.card2?.title || '')}" placeholder="e.g. Sandra 58 💕" style="width:100%;"/></div>
+            <div><label style="font-size:12px;">Subtitle</label><input name="subtitle2" value="${esc(page.card2?.subtitle || '')}" placeholder="e.g. I'm a widow..." style="width:100%;"/></div>
           </div>
-          <a href="/send-now?page=${pid}" class="btn btn-green" style="display:block;text-align:center;margin:0;" onclick="return confirm('Send PHOTO CARD to ${fans.length} fans now?')">Send Card to All</a>
-        </div>
-        <div style="background:#fef3e7;border:1px solid #fde68a;border-radius:8px;padding:12px;">
-          <h3 style="margin:0 0 8px;color:#92400e;font-size:14px;">Template 2: Plain Text</h3>
-          <form action="/save-text-template?page=${pid}" method="POST" style="margin:0;">
-            <textarea name="textTemplate" placeholder="e.g. Hello! Where are you from?" style="width:100%;min-height:80px;padding:7px 9px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;font-family:inherit;resize:vertical;background:#fff;">${esc(page.textTemplate || '')}</textarea>
-            <button type="submit" class="btn" style="background:#92400e;width:100%;margin-top:6px;">Save Text</button>
-          </form>
-          <form action="/send-text-now?page=${pid}" method="POST" style="margin:6px 0 0;">
-            <button type="submit" class="btn btn-green" style="display:block;text-align:center;margin:0;width:100%;" onclick="return confirm('Send TEXT to ${fans.length} fans now?')">Send Text to All</button>
-          </form>
-        </div>
+          <div class="row" style="margin-bottom:8px;">
+            <div><label style="font-size:12px;">Button Text</label><input name="buttonText2" value="${esc(page.card2?.buttonText || '')}" placeholder="My Photos 📞" style="width:100%;"/></div>
+            <div><label style="font-size:12px;">Redirect URL</label><input name="redirect2" value="${esc(page.card2?.redirect || '')}" placeholder="https://..." style="width:100%;font-family:monospace;font-size:12px;"/></div>
+          </div>
+          <div style="margin-bottom:8px;"><label style="font-size:12px;">Photo URL</label><input name="photo2" value="${esc(page.card2?.photo || '')}" placeholder="https://i.imgur.com/..." style="width:100%;font-family:monospace;font-size:12px;"/></div>
+          <button type="submit" class="btn btn-green" style="margin-top:0;">💾 Save Card 2</button>
+        </form>
+        ${page.card2?.photo ? `<a href="/send-now2?page=${pid}" class="btn btn-green" style="display:block;text-align:center;" onclick="return confirm('Send Card 2 to ${fans.length} fans?')">🚀 Send Card 2 to All</a>` : '<div style="font-size:12px;color:#94a3b8;">Save Card 2 settings first to enable sending.</div>'}
+      </div>
+
+      <!-- Plain Text Messages -->
+      <div style="border:1px solid #e2e8f0;border-radius:8px;padding:14px;">
+        <h3 style="margin:0 0 12px;color:#1a1d2e;font-size:14px;">💬 Plain Text Messages</h3>
+        ${(() => {
+          const msgs = page.textMessages || [];
+          if (!msgs.length) return '<div style="color:#94a3b8;font-size:13px;margin-bottom:12px;">No text messages saved yet — add one below.</div>';
+          return msgs.map((msg, i) => `
+            <div style="background:#f9fafb;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+              <div style="display:flex;align-items:flex-start;gap:8px;">
+                <span style="background:#6366f1;color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;white-space:nowrap;margin-top:2px;">#${i+1}</span>
+                <div style="flex:1;font-size:13px;color:#1a1d2e;white-space:pre-wrap;word-break:break-word;">${esc(msg.text)}</div>
+              </div>
+              <div style="display:flex;gap:6px;margin-top:8px;">
+                <form action="/send-text-message-now?page=${pid}&msgId=${esc(msg.id)}" method="POST" style="margin:0;">
+                  <button type="submit" class="btn btn-green" style="font-size:12px;padding:5px 12px;margin:0;" onclick="return confirm('Send this text to ${fans.length} fans?')">🚀 Send to All</button>
+                </form>
+                <form action="/delete-text-message?page=${pid}&msgId=${esc(msg.id)}" method="POST" style="margin:0;">
+                  <button type="submit" class="btn" style="background:#dc2626;color:#fff;font-size:12px;padding:5px 12px;margin:0;" onclick="return confirm('Delete this message?')">🗑️ Delete</button>
+                </form>
+              </div>
+            </div>`).join('');
+        })()}
+        <form action="/add-text-message?page=${pid}" method="POST" style="margin-top:4px;">
+          <textarea name="text" placeholder="Type your message here... e.g. Hey 😊 How's your day going?" style="width:100%;min-height:80px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical;"></textarea>
+          <button type="submit" class="btn btn-green" style="margin-top:6px;">➕ Add Text Message</button>
+        </form>
       </div>
     </div>
 
@@ -3648,6 +3701,68 @@ app.post('/send-custom', (req, res) => {
     <p>Sending to <strong>${count} fans</strong>.</p>
     <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
   </div></div></body></html>`);
+});
+
+// Card 2 — save settings
+app.post('/update-card2', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  updatePage(pageId, { card2: {
+    title: (req.body.title2 || '').trim(),
+    subtitle: (req.body.subtitle2 || '').trim(),
+    buttonText: (req.body.buttonText2 || '').trim() || 'My Photos',
+    redirect: (req.body.redirect2 || '').trim(),
+    photo: (req.body.photo2 || '').trim()
+  }});
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// Card 2 — send to all fans
+app.get('/send-now2', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const card2 = page.card2;
+  if (!card2 || !card2.photo) return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=Card+2+not+set+up`);
+  broadcastToPage(page, { photo: card2.photo, title: card2.title, subtitle: card2.subtitle, buttonText: card2.buttonText, redirect: card2.redirect });
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// Plain text messages — add
+app.post('/add-text-message', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const text = (req.body.text || '').trim();
+  if (!text) return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=Empty+message`);
+  const msgs = page.textMessages || [];
+  msgs.push({ id: 'tm' + Date.now(), text });
+  updatePage(pageId, { textMessages: msgs });
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// Plain text messages — delete
+app.post('/delete-text-message', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const msgId = req.query.msgId;
+  const msgs = (page.textMessages || []).filter(m => m.id !== msgId);
+  updatePage(pageId, { textMessages: msgs });
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
+});
+
+// Plain text messages — send to all fans
+app.post('/send-text-message-now', (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  const msgId = req.query.msgId;
+  const msg = (page.textMessages || []).find(m => m.id === msgId);
+  if (!msg) return res.redirect(`/?page=${encodeURIComponent(pageId)}&error=Message+not+found`);
+  broadcastToPage(page, { textOnly: true, text: msg.text });
+  res.redirect(`/?page=${encodeURIComponent(pageId)}&saved=1`);
 });
 
 app.post('/save-text-template', (req, res) => {
