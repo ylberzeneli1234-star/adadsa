@@ -903,7 +903,7 @@ const CSS = `
   .topbar h1 { margin: 0; font-size: 22px; font-weight: 700; }
   .topbar .meta { font-size: 13px; opacity: 0.7; }
   .topbar select { background: #2c3142; color: #fff; border: 1px solid #3a4055; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
-  .container { max-width: 100%; margin: 0; padding: 8px; }
+  .container { max-width: 1400px; margin: 16px auto; padding: 0 16px; }
   .card { background: #fff; border-radius: 10px; padding: 22px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
   .card h2 { margin: 0 0 14px 0; font-size: 18px; color: #1a1d2e; border-bottom: 2px solid #f0f1f5; padding-bottom: 10px; }
   .card h3 { margin: 18px 0 10px 0; font-size: 15px; color: #4a5568; }
@@ -1675,6 +1675,7 @@ function renderAllPagesView(pages, req) {
     // Broadcast progress for this page
     const bp = broadcastProgress[p.pageId];
     const isRunning = bp && bp.status === 'running';
+    const justFinished = bp && bp.status === 'complete' && bp.finishedAt && (Date.now() - bp.finishedAt < 300000);
     if (isRunning) anyBroadcastRunning = true;
     const pct = isRunning ? Math.round(bp.done / bp.total * 100) : 0;
 
@@ -1685,6 +1686,12 @@ function renderAllPagesView(pages, req) {
         <div style="background:#bfdbfe;border-radius:4px;height:6px;width:80px;margin-top:3px;overflow:hidden;">
           <div style="background:#3a8dde;height:100%;width:${pct}%;border-radius:4px;transition:width 0.5s;"></div>
         </div>
+      </div>`;
+    } else if (justFinished) {
+      const agoMin = Math.round((Date.now() - bp.finishedAt) / 60000);
+      statusCell = `<div>
+        <div style="font-size:11px;font-weight:700;color:#166534;">✅ Done ${bp.total}/${bp.total}</div>
+        <div style="font-size:10px;color:#6b7280;">${agoMin < 1 ? 'just now' : agoMin + 'm ago'} · ${bp.type || 'card'}</div>
       </div>`;
     } else {
       statusCell = `<span class="badge ${p.broadcastEnabled ? 'badge-green' : 'badge-gray'}">${p.broadcastEnabled ? 'Auto ON' : 'Auto OFF'}</span>
