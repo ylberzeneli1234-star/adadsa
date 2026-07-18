@@ -903,7 +903,7 @@ const CSS = `
   .topbar h1 { margin: 0; font-size: 22px; font-weight: 700; }
   .topbar .meta { font-size: 13px; opacity: 0.7; }
   .topbar select { background: #2c3142; color: #fff; border: 1px solid #3a4055; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
-  .container { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+  .container { max-width: 100%; margin: 0; padding: 8px; }
   .card { background: #fff; border-radius: 10px; padding: 22px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
   .card h2 { margin: 0 0 14px 0; font-size: 18px; color: #1a1d2e; border-bottom: 2px solid #f0f1f5; padding-bottom: 10px; }
   .card h3 { margin: 18px 0 10px 0; font-size: 15px; color: #4a5568; }
@@ -971,7 +971,7 @@ const CSS = `
 `;
 
 function renderHead(title) {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>${esc(title)}</title><style>${CSS}</style></head><body>`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=1200, initial-scale=0.35, user-scalable=yes"/><title>${esc(title)}</title><style>${CSS}</style></head><body>`;
 }
 
 function renderTopbar(pages, selectedPageId) {
@@ -1648,12 +1648,17 @@ function renderAllPagesView(pages, req) {
   const todayStr = new Date().toISOString().split('T')[0];
   const globalMode = getGlobalContentMode();
   const globalSendMode = getGlobalSendMode();
+
+  // Check if any broadcast is running
+  let anyBroadcastRunning = false;
+
   const rows = pages.map(p => {
     const fans = loadFans(p.pageId);
     const stats = loadStats(p.pageId);
     const clicks = stats.clicks || [];
     const dailyClicks = clicks.filter(c => (c.time || '').startsWith(todayStr)).length;
     const dailySent = (stats.dailyMessages || {})[todayStr]?.sent || 0;
+    const dailyFailed = (stats.dailyMessages || {})[todayStr]?.failed || 0;
     const mode = pageContentMode(p);
     const pSendMode = pageSendMode(p);
     const sNow = p.sendNowEnabled !== false;
@@ -1666,17 +1671,35 @@ function renderAllPagesView(pages, req) {
       ? '<span class="badge" style="background:#f0fdf4;color:#166534;">📷💬</span>'
       : '';
     const group = p.group ? `<span class="group-badge">${esc(p.group)}</span>` : '<span class="group-badge unassigned">—</span>';
+
+    // Broadcast progress for this page
+    const bp = broadcastProgress[p.pageId];
+    const isRunning = bp && bp.status === 'running';
+    if (isRunning) anyBroadcastRunning = true;
+    const pct = isRunning ? Math.round(bp.done / bp.total * 100) : 0;
+
+    let statusCell;
+    if (isRunning) {
+      statusCell = `<div>
+        <div style="font-size:11px;font-weight:700;color:#1e40af;">📡 ${bp.done}/${bp.total}</div>
+        <div style="background:#bfdbfe;border-radius:4px;height:6px;width:80px;margin-top:3px;overflow:hidden;">
+          <div style="background:#3a8dde;height:100%;width:${pct}%;border-radius:4px;transition:width 0.5s;"></div>
+        </div>
+      </div>`;
+    } else {
+      statusCell = `<span class="badge ${p.broadcastEnabled ? 'badge-green' : 'badge-gray'}">${p.broadcastEnabled ? 'Auto ON' : 'Auto OFF'}</span>
+        ${sNow ? '' : '<span class="badge badge-gray">Send ⏸</span>'}`;
+    }
+
     return `<tr>
       <td style="white-space:nowrap;"><a href="/?page=${esc(p.pageId)}" style="font-weight:600;text-decoration:none;color:#3a8dde;">${esc(p.label)}</a></td>
       <td>${group}</td>
       <td>${fans.length}</td>
       <td>${dailySent}</td>
+      <td>${dailyFailed}</td>
       <td>${dailyClicks}</td>
       <td>${modeBadge} ${sendModeBadge}</td>
-      <td>
-        <span class="badge ${p.broadcastEnabled ? 'badge-green' : 'badge-gray'}">${p.broadcastEnabled ? 'Auto ON' : 'Auto OFF'}</span>
-        ${sNow ? '' : '<span class="badge badge-gray">Send ⏸</span>'}
-      </td>
+      <td>${statusCell}</td>
       <td>
         <div class="actions">
           <form action="/send-now-page" method="POST" style="margin:0;">
@@ -1697,11 +1720,25 @@ function renderAllPagesView(pages, req) {
     const st = loadStats(p.pageId);
     return s + ((st.dailyMessages || {})[todayStr]?.sent || 0);
   }, 0);
+  const totalFailed = pages.reduce((s, p) => {
+    const st = loadStats(p.pageId);
+    return s + ((st.dailyMessages || {})[todayStr]?.failed || 0);
+  }, 0);
   const totalClicks = pages.reduce((s, p) => {
     const st = loadStats(p.pageId);
     return s + (st.clicks || []).filter(c => (c.time || '').startsWith(todayStr)).length;
   }, 0);
   const autoOn = pages.filter(p => p.broadcastEnabled).length;
+
+  const groups = getAllGroups(pages);
+  const eligibleAll = pages.filter(p => p.sendNowEnabled !== false);
+  const allFans = eligibleAll.reduce((acc, p) => acc + loadFans(p.pageId).length, 0);
+
+  const groupOptions = groups.map(g => {
+    const gPages = pages.filter(p => p.group === g && p.sendNowEnabled !== false);
+    const gFans = gPages.reduce((acc, p) => acc + loadFans(p.pageId).length, 0);
+    return `<option value="${esc(g)}">${esc(g)} — ${gPages.length} pages · ${gFans} fans</option>`;
+  }).join('');
 
   return `<div class="container">
     ${renderAlerts(req)}
@@ -1711,12 +1748,63 @@ function renderAllPagesView(pages, req) {
       <div class="stat"><div class="v">${pages.length}</div><div class="l">Pages</div></div>
       <div class="stat"><div class="v">${totalFans.toLocaleString()}</div><div class="l">Total Fans</div></div>
       <div class="stat"><div class="v">${totalSent.toLocaleString()}</div><div class="l">Sent Today</div></div>
+      <div class="stat"><div class="v">${totalFailed.toLocaleString()}</div><div class="l">Failed Today</div></div>
       <div class="stat"><div class="v">${totalClicks}</div><div class="l">Clicks Today</div></div>
-      <div class="stat"><div class="v">${autoOn}/${pages.length}</div><div class="l">Auto-Send ON</div></div>
+      <div class="stat"><div class="v">${autoOn}/${pages.length}</div><div class="l">Auto ON</div></div>
     </div>
 
     ${renderGroupManager(pages)}
-    ${renderGroupSendNow(pages)}
+
+    <!-- ═══ SEND NOW + BULK ACTIONS ═══ -->
+    <div style="margin-bottom:12px;padding:14px;background:#f0fdf4;border:2px solid #86efac;border-radius:8px;">
+      <div style="font-size:13px;font-weight:700;color:#166534;margin-bottom:10px;">📣 Send Now &amp; Bulk Actions</div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+        ${groups.length > 0 ? `
+        <form action="/send-now-group" method="POST" style="display:inline;margin:0;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <select name="group" style="padding:7px 10px;border:1px solid #86efac;border-radius:6px;font-size:13px;background:#fff;color:#166534;font-weight:600;">
+              ${groupOptions}
+            </select>
+            <button type="submit" class="qbtn" style="background:#16a34a;" onclick="return confirm('Send Now to selected group?')">📣 Send Group</button>
+            <button type="submit" name="randomize" value="1" class="qbtn" style="background:#7c3aed;" onclick="return confirm('Randomize + Send to selected group?')">🎲📣 Rand + Send Group</button>
+          </div>
+        </form>
+        <span style="color:#cbd5e1;font-size:18px;">|</span>` : ''}
+
+        <form action="/send-now-all" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#166534;" onclick="return confirm('SEND NOW to ALL ${eligibleAll.length} eligible pages (${allFans} fans)?')">📣 Send All (${eligibleAll.length})</button>
+        </form>
+        <form action="/send-now-all?randomize=1" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#5b21b6;" onclick="return confirm('RANDOMIZE + SEND to ALL?')">🎲📣 Rand + Send All</button>
+        </form>
+
+        <span style="color:#cbd5e1;font-size:18px;">|</span>
+
+        <form action="/pause-all" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#f59e0b;" onclick="return confirm('Pause daily broadcast on ALL pages?')">⏸ Pause All</button>
+        </form>
+        <form action="/resume-all" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#28a745;" onclick="return confirm('Resume daily broadcast on ALL pages?')">▶ Resume All</button>
+        </form>
+        <form action="/randomize-all" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#8b5cf6;" onclick="return confirm('Randomize all pages?')">🎲 Randomize All</button>
+        </form>
+        <form action="/reset-stats-all" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#dc3545;" onclick="return confirm('Reset ALL stats?')">🗑️ Reset All Stats</button>
+        </form>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <form action="/pause-sendnow-all" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#f59e0b;" onclick="return confirm('Pause Send Now on ALL pages?')">🚫 Pause Send Now (All)</button>
+        </form>
+        <form action="/resume-sendnow-all" method="POST" style="display:inline;margin:0;">
+          <button type="submit" class="qbtn" style="background:#16a34a;" onclick="return confirm('Resume Send Now on ALL pages?')">✅ Resume Send Now (All)</button>
+        </form>
+      </div>
+    </div>
+
     ${renderLibraryManager()}
 
     <div style="margin-bottom:12px;padding:12px;background:#faf5ff;border:2px solid #e9d5ff;border-radius:8px;">
@@ -1749,27 +1837,9 @@ function renderAllPagesView(pages, req) {
       <h2>📊 All Pages</h2>
       <div style="overflow-x:auto;">
       <table>
-        <tr><th>Label</th><th>Group</th><th>Fans</th><th>Sent</th><th>Clicks</th><th>Mode</th><th>Status</th><th></th></tr>
+        <tr><th>Label</th><th>Group</th><th>Fans</th><th>Sent</th><th>Failed</th><th>Clicks</th><th>Mode</th><th>Status</th><th></th></tr>
         ${rows}
       </table>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>📦 Bulk Actions</h2>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <form action="/pause-all" method="POST" style="margin:0;">
-          <button type="submit" class="btn btn-orange" onclick="return confirm('Pause daily broadcast on ALL pages?')">⏸ Pause All</button>
-        </form>
-        <form action="/resume-all" method="POST" style="margin:0;">
-          <button type="submit" class="btn btn-green" onclick="return confirm('Resume daily broadcast on ALL pages?')">▶ Resume All</button>
-        </form>
-        <form action="/randomize-all" method="POST" style="margin:0;">
-          <button type="submit" class="btn" style="background:#8b5cf6;color:#fff;" onclick="return confirm('Randomize photo + URL for every page?')">🎲 Randomize All</button>
-        </form>
-        <form action="/reset-stats-all" method="POST" style="margin:0;">
-          <button type="submit" class="btn btn-red" onclick="return confirm('Reset ALL stats (clicks, sent, etc) on ALL pages?')">🗑️ Reset All Stats</button>
-        </form>
       </div>
     </div>
 
@@ -1801,6 +1871,8 @@ function renderAllPagesView(pages, req) {
         <button type="submit" class="btn btn-orange" onclick="return confirm('Restore from backup? This will REPLACE all current data.')">⬆️ Restore</button>
       </form>
     </div>
+
+    ${anyBroadcastRunning ? '<meta http-equiv="refresh" content="10"/>' : ''}
   </div>`;
 }
 
