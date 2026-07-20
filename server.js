@@ -723,21 +723,46 @@ function sendTextMessage(page, psid, text) {
 const broadcastProgress = {};
 
 function startBroadcastTracking(pageId, total, type) {
+  const runId = 'run_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
   broadcastProgress[pageId] = {
-    total, done: 0, failed: 0,
+    total, done: 0, sent: 0, failed: 0,
     startedAt: Date.now(), finishedAt: null,
-    type, status: total > 0 ? 'running' : 'complete'
+    type, status: total > 0 ? 'running' : 'complete',
+    runId
   };
-  if (total === 0) broadcastProgress[pageId].finishedAt = Date.now();
+  if (total === 0) {
+    broadcastProgress[pageId].finishedAt = Date.now();
+    // Persist empty run
+    persistBroadcastRun(pageId, broadcastProgress[pageId]);
+  }
 }
-function tickBroadcast(pageId) {
+function tickBroadcast(pageId, success) {
   const b = broadcastProgress[pageId];
   if (!b) return;
   b.done++;
+  if (success) b.sent++; else b.failed++;
   if (b.done >= b.total) {
     b.status = 'complete';
     b.finishedAt = Date.now();
+    // Persist completed run to stats
+    persistBroadcastRun(pageId, b);
   }
+}
+function persistBroadcastRun(pageId, b) {
+  try {
+    const s = loadStats(pageId);
+    s.broadcastRuns = s.broadcastRuns || [];
+    s.broadcastRuns.push({
+      id: b.runId,
+      startedAt: new Date(b.startedAt).toISOString(),
+      finishedAt: new Date(b.finishedAt).toISOString(),
+      total: b.total, sent: b.sent, failed: b.failed, type: b.type
+    });
+    // Keep only last 7 days of runs
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 7);
+    s.broadcastRuns = s.broadcastRuns.filter(r => new Date(r.startedAt) > cutoff);
+    saveStats(pageId, s);
+  } catch (e) { console.error(`[${pageId}] Failed to persist broadcast run:`, e.message); }
 }
 
 function broadcastToPage(page, opts = {}) {
@@ -754,30 +779,29 @@ function broadcastToPage(page, opts = {}) {
 
   fans.forEach((psid, i) => {
     setTimeout(async () => {
+      let success = false;
       try {
+        let result;
         if (opts.textOnly && opts.text) {
-          // Legacy: per-page saved text messages — always use their specific text
-          await sendTextMessage(page, psid, opts.text);
+          result = await sendTextMessage(page, psid, opts.text);
         } else if (effectiveSendMode === 'text') {
-          // Text Only mode — pick random from shared pool
           if (pool.length) {
             const text = pool[Math.floor(Math.random() * pool.length)];
-            await sendText(page, psid, text, opts);
+            result = await sendText(page, psid, text, opts);
           }
         } else if (effectiveSendMode === 'card+text') {
-          // Card + Text — send card first, then text 1.5s later
-          await sendCard(page, psid, opts);
+          result = await sendCard(page, psid, opts);
           if (pool.length) {
             await new Promise(r => setTimeout(r, 1500));
             const text = pool[Math.floor(Math.random() * pool.length)];
             await sendText(page, psid, text, opts);
           }
         } else {
-          // Card Only (default)
-          await sendCard(page, psid, opts);
+          result = await sendCard(page, psid, opts);
         }
+        success = !(result && result.error);
       } catch {}
-      tickBroadcast(page.pageId);
+      tickBroadcast(page.pageId, success);
     }, i * spacing);
   });
   return fans.length;
@@ -823,8 +847,12 @@ function broadcastTextToPage(page, text, opts = {}) {
   startBroadcastTracking(page.pageId, fans.length, 'text');
   fans.forEach((psid, i) => {
     setTimeout(async () => {
-      try { await sendText(page, psid, text, opts); } catch {}
-      tickBroadcast(page.pageId);
+      let success = false;
+      try {
+        const result = await sendText(page, psid, text, opts);
+        success = !(result && result.error);
+      } catch {}
+      tickBroadcast(page.pageId, success);
     }, i * spacing);
   });
   return fans.length;
@@ -903,7 +931,7 @@ const CSS = `
   .topbar h1 { margin: 0; font-size: 22px; font-weight: 700; }
   .topbar .meta { font-size: 13px; opacity: 0.7; }
   .topbar select { background: #2c3142; color: #fff; border: 1px solid #3a4055; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
-  .container { max-width: 1400px; margin: 16px auto; padding: 0 16px; }
+  .container { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
   .card { background: #fff; border-radius: 10px; padding: 22px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
   .card h2 { margin: 0 0 14px 0; font-size: 18px; color: #1a1d2e; border-bottom: 2px solid #f0f1f5; padding-bottom: 10px; }
   .card h3 { margin: 18px 0 10px 0; font-size: 15px; color: #4a5568; }
@@ -1659,6 +1687,11 @@ function renderAllPagesView(pages, req) {
     const dailyClicks = clicks.filter(c => (c.time || '').startsWith(todayStr)).length;
     const dailySent = (stats.dailyMessages || {})[todayStr]?.sent || 0;
     const dailyFailed = (stats.dailyMessages || {})[todayStr]?.failed || 0;
+    // Get today's broadcast runs for per-run display
+    const todayRuns = (stats.broadcastRuns || []).filter(r => (r.startedAt || '').startsWith(todayStr));
+    // Also check in-memory for running broadcast
+    const liveBp = broadcastProgress[p.pageId];
+    const liveRun = liveBp && liveBp.status === 'running' ? liveBp : null;
     const mode = pageContentMode(p);
     const pSendMode = pageSendMode(p);
     const sNow = p.sendNowEnabled !== false;
@@ -1702,8 +1735,26 @@ function renderAllPagesView(pages, req) {
       <td style="white-space:nowrap;"><a href="/?page=${esc(p.pageId)}" style="font-weight:600;text-decoration:none;color:#3a8dde;">${esc(p.label)}</a></td>
       <td>${group}</td>
       <td>${fans.length}</td>
-      <td>${dailySent}</td>
-      <td>${dailyFailed}</td>
+      <td>${(function(){
+        // Show per-run breakdown for today
+        let lines = [];
+        todayRuns.forEach(r => {
+          const t = new Date(r.startedAt);
+          const hh = String(t.getHours()).padStart(2,'0');
+          const mm = String(t.getMinutes()).padStart(2,'0');
+          lines.push('<div style="white-space:nowrap;font-size:11px;line-height:1.6;"><span style="color:#94a3b8;">' + hh + ':' + mm + '</span> <span style="color:#166534;font-weight:600;">' + r.sent + ' ✅</span> · <span style="color:#dc2626;font-weight:600;">' + r.failed + ' ❌</span></div>');
+        });
+        if (liveRun) {
+          lines.push('<div style="white-space:nowrap;font-size:11px;line-height:1.6;"><span style="color:#6366f1;">📡 ' + liveRun.sent + ' ✅ · ' + liveRun.failed + ' ❌</span> <span style="color:#94a3b8;">(' + liveRun.done + '/' + liveRun.total + ')</span></div>');
+        }
+        if (!lines.length) {
+          if (dailySent || dailyFailed) {
+            return '<span style="color:#166534;font-weight:600;">' + dailySent + ' ✅</span> · <span style="color:#dc2626;font-weight:600;">' + dailyFailed + ' ❌</span>';
+          }
+          return '<span style="color:#cbd5e1;">—</span>';
+        }
+        return lines.join('');
+      })()}</td>
       <td>${dailyClicks}</td>
       <td>${modeBadge} ${sendModeBadge}</td>
       <td>${statusCell}</td>
@@ -1754,11 +1805,107 @@ function renderAllPagesView(pages, req) {
     <div class="grid" style="margin-bottom:18px;">
       <div class="stat"><div class="v">${pages.length}</div><div class="l">Pages</div></div>
       <div class="stat"><div class="v">${totalFans.toLocaleString()}</div><div class="l">Total Fans</div></div>
-      <div class="stat"><div class="v">${totalSent.toLocaleString()}</div><div class="l">Sent Today</div></div>
-      <div class="stat"><div class="v">${totalFailed.toLocaleString()}</div><div class="l">Failed Today</div></div>
+      <div class="stat"><div class="v"><span style="color:#166534;">${totalSent.toLocaleString()} ✅</span> · <span style="color:#dc2626;">${totalFailed.toLocaleString()} ❌</span></div><div class="l">Messages Today</div></div>
       <div class="stat"><div class="v">${totalClicks}</div><div class="l">Clicks Today</div></div>
       <div class="stat"><div class="v">${autoOn}/${pages.length}</div><div class="l">Auto ON</div></div>
     </div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:280px;background:#fff;border-radius:8px;padding:10px 14px;box-shadow:0 1px 3px rgba(0,0,0,0.06);display:flex;gap:8px;align-items:center;">
+        <textarea id="bulk-pages-input" rows="1" placeholder="Paste rows: Name TAB PageID TAB Token  (one per line)" style="flex:1;font-family:monospace;font-size:12px;padding:6px 8px;border:1px solid #86efac;border-radius:6px;resize:none;min-height:34px;max-height:120px;overflow-y:auto;" oninput="this.style.height='34px';this.style.height=Math.min(this.scrollHeight,120)+'px';"></textarea>
+        <button type="button" class="qbtn" style="background:#16a34a;white-space:nowrap;" onclick="parseBulkPages()">🔍 Preview</button>
+        <button type="button" id="bulk-add-btn" class="qbtn" style="background:#15803d;display:none;white-space:nowrap;" onclick="submitBulkPages()">➕ Add</button>
+        <span id="bulk-status" style="font-size:12px;font-weight:600;white-space:nowrap;"></span>
+      </div>
+    </div>
+    <div id="bulk-preview" style="margin-bottom:12px;"></div>
+    <script>
+      var bulkParsed = [];
+      function parseBulkPages() {
+        var raw = document.getElementById('bulk-pages-input').value || '';
+        if (!raw.trim()) return;
+        var TAB = String.fromCharCode(9), NL = String.fromCharCode(10), CR = String.fromCharCode(13);
+        var allCells = raw.replace(new RegExp(CR,'g'),'').split(new RegExp('['+TAB+NL+']'))
+          .map(function(c){ return c.trim(); }).filter(function(c){ return c.length > 0; });
+        function isDigit(ch) { var c=ch.charCodeAt(0); return c>=48&&c<=57; }
+        function isAllDigits(s) { if(s.length<8) return false; for(var i=0;i<s.length;i++){if(!isDigit(s[i]))return false;} return true; }
+        function extractDigits(s) { var best='',cur=''; for(var i=0;i<s.length;i++){if(isDigit(s[i])){cur+=s[i];}else{if(cur.length>best.length)best=cur;cur='';}} if(cur.length>best.length)best=cur; return best.length>=8?best:null; }
+        function isToken(s) { return s.length>10&&s.slice(0,3).toUpperCase()==='EAA'; }
+        var tokens=[],pageIds=[],names=[];
+        allCells.forEach(function(c) {
+          if (isToken(c)) tokens.push(c);
+          else if (isAllDigits(c)) pageIds.push(c);
+          else { var found=extractDigits(c); if(found){pageIds.push(found);var nm=c.replace(found,'').trim();if(nm)names.push(nm);}else{names.push(c);} }
+        });
+        bulkParsed=[]; var errors=[];
+        var count=Math.max(tokens.length,pageIds.length);
+        if(count===0){document.getElementById('bulk-status').style.color='#92400e';document.getElementById('bulk-status').textContent='Nothing recognized';document.getElementById('bulk-preview').innerHTML='';document.getElementById('bulk-add-btn').style.display='none';return;}
+        for(var i=0;i<count;i++){if(!pageIds[i]){errors.push('Entry '+(i+1)+': missing Page ID');continue;}if(!tokens[i]){errors.push('Entry '+(i+1)+': missing Token (EAA...)');continue;}bulkParsed.push({name:names[i]||'Page '+pageIds[i],pageId:pageIds[i],token:tokens[i]});}
+        var preview=document.getElementById('bulk-preview'),status=document.getElementById('bulk-status'),addBtn=document.getElementById('bulk-add-btn');
+        var rows=bulkParsed.map(function(p,i){return '<tr style="background:'+(i%2===0?'#f9fafb':'#fff')+'"><td style="padding:5px 8px;font-weight:600;font-size:13px;">'+escH(p.name)+'</td><td style="padding:5px 8px;font-family:monospace;font-size:11px;color:#6b7280;">'+escH(p.pageId)+'</td><td style="padding:5px 8px;font-family:monospace;font-size:11px;color:#16a34a;">'+escH(p.token.slice(0,14))+'...</td></tr>';}).join('');
+        preview.innerHTML=bulkParsed.length?'<div style="background:#fff;border-radius:8px;border:1px solid #86efac;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06);"><table style="width:100%;border-collapse:collapse;"><thead><tr style="background:#f0fdf4;"><th style="padding:6px 8px;text-align:left;font-size:11px;color:#166534;">Name</th><th style="padding:6px 8px;text-align:left;font-size:11px;color:#166534;">Page ID</th><th style="padding:6px 8px;text-align:left;font-size:11px;color:#166534;">Token</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'';
+        if(bulkParsed.length>0){status.style.color='#16a34a';status.textContent=bulkParsed.length+' ready';addBtn.style.display='inline-block';addBtn.textContent='Add '+bulkParsed.length;}else{status.style.color='#dc2626';status.textContent=errors.length+' error(s)';addBtn.style.display='none';}
+      }
+      function escH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+      function submitBulkPages(){
+        if(!bulkParsed.length)return;var btn=document.getElementById('bulk-add-btn'),status=document.getElementById('bulk-status');
+        btn.disabled=true;btn.textContent='Adding...';status.style.color='#6b7280';status.textContent='Saving...';
+        fetch('/bulk-add-pages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pages:bulkParsed})})
+          .then(function(r){return r.json();}).then(function(d){
+            if(d.ok){status.style.color='#16a34a';status.textContent=d.added+' added, '+d.skipped+' skipped';btn.style.display='none';document.getElementById('bulk-pages-input').value='';document.getElementById('bulk-preview').innerHTML='';bulkParsed=[];setTimeout(function(){location.reload();},1200);}
+            else{status.style.color='#dc2626';status.textContent='Error '+(d.error||'unknown');btn.disabled=false;}
+          }).catch(function(e){status.style.color='#dc2626';status.textContent='Error '+e.message;btn.disabled=false;});
+      }
+    </script>
+
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;background:#1a1d2e;border-radius:8px;padding:12px 16px;">
+      <span style="font-size:12px;font-weight:700;color:#a5b4fc;text-transform:uppercase;letter-spacing:0.5px;">All Pages</span>
+      <button type="button" class="qbtn" style="background:#dc2626;" onclick="clearAllFans()">🗑️ Clear ALL Fans</button>
+      <button type="button" class="qbtn" style="background:#2563eb;" onclick="importAllPages()">📥 Import ALL Pages</button>
+      <button type="button" class="qbtn" style="background:#7c3aed;" onclick="triggerRedeploy()">🔄 Redeploy Railway</button>
+      <span id="bulk-ops-status" style="font-size:13px;font-weight:600;color:#a5b4fc;"></span>
+    </div>
+    <script>
+      var allPageIds = ${JSON.stringify(pages.map(p => p.pageId))};
+      function clearAllFans(){
+        if(!confirm('CLEAR ALL FANS on ALL '+allPageIds.length+' pages? This cannot be undone!'))return;
+        if(!confirm('Are you absolutely sure? This deletes every fan list on every page.'))return;
+        var status=document.getElementById('bulk-ops-status');
+        status.style.color='#6b7280';status.textContent='Clearing...';
+        fetch('/clear-all-fans',{method:'POST',headers:{'Content-Type':'application/json'}})
+          .then(function(r){return r.json();}).then(function(d){
+            if(d.ok){status.style.color='#16a34a';status.textContent='Cleared fans on '+d.cleared+' pages';setTimeout(function(){location.reload();},1500);}
+            else{status.style.color='#dc2626';status.textContent='Error '+(d.error||'unknown');}
+          }).catch(function(e){status.style.color='#dc2626';status.textContent='Error '+e.message;});
+      }
+      function importAllPages(){
+        if(!confirm('Import contacts for ALL '+allPageIds.length+' pages? Will run 20 at a time in parallel.'))return;
+        var status=document.getElementById('bulk-ops-status');
+        var BATCH=20,done=0,failed=0,processed=0,total=allPageIds.length;
+        var batches=[];for(var i=0;i<total;i+=BATCH)batches.push(allPageIds.slice(i,i+BATCH));
+        var bIdx=0;
+        function runBatch(){
+          if(bIdx>=batches.length){status.style.color='#16a34a';status.textContent='Done — '+done+' imported, '+failed+' failed ('+total+' pages)';return;}
+          var batch=batches[bIdx++];
+          status.style.color='#6b7280';status.textContent='Batch '+bIdx+'/'+batches.length+' — importing '+batch.length+' pages... ('+processed+'/'+total+' done)';
+          fetch('/import-contacts-batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pageIds:batch})})
+            .then(function(r){return r.json();}).then(function(d){
+              if(d&&d.results){d.results.forEach(function(r){processed++;if(r.ok)done++;else failed++;});}else{processed+=batch.length;failed+=batch.length;}
+              runBatch();
+            }).catch(function(){processed+=batch.length;failed+=batch.length;runBatch();});
+        }
+        runBatch();
+      }
+      function triggerRedeploy(){
+        if(!confirm('Redeploy Railway now? The bot will be offline for ~30 seconds.'))return;
+        var status=document.getElementById('bulk-ops-status');
+        status.style.color='#7c3aed';status.textContent='Deploying...';
+        fetch('/redeploy',{method:'POST'}).then(function(r){return r.json();}).then(function(d){
+          if(d.ok){status.style.color='#16a34a';status.textContent='Redeployment triggered — bot will restart in ~30s';}
+          else{status.style.color='#dc2626';status.textContent='Failed: '+(d.error||'check RAILWAY_API_TOKEN + RAILWAY_SERVICE_ID env vars');}
+        }).catch(function(e){status.style.color='#dc2626';status.textContent='Error '+e.message;});
+      }
+    </script>
 
     ${renderGroupManager(pages)}
 
@@ -1844,7 +1991,7 @@ function renderAllPagesView(pages, req) {
       <h2>📊 All Pages</h2>
       <div style="overflow-x:auto;">
       <table>
-        <tr><th>Label</th><th>Group</th><th>Fans</th><th>Sent</th><th>Failed</th><th>Clicks</th><th>Mode</th><th>Status</th><th></th></tr>
+        <tr><th>Label</th><th>Group</th><th>Fans</th><th>Messages (today)</th><th>Clicks</th><th>Mode</th><th>Status</th><th></th></tr>
         ${rows}
       </table>
       </div>
@@ -1877,6 +2024,21 @@ function renderAllPagesView(pages, req) {
         <input type="file" name="backupFile" accept=".json" style="margin-top:4px;"/>
         <button type="submit" class="btn btn-orange" onclick="return confirm('Restore from backup? This will REPLACE all current data.')">⬆️ Restore</button>
       </form>
+    </div>
+
+    <div class="card" style="border:2px solid #b5d4f4;background:#eef6ff;">
+      <h2 style="color:#0c447c;">📋 Facebook Developer Setup</h2>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+        <span style="font-size:11px;color:#0c447c;font-weight:600;min-width:100px;">Callback URL</span>
+        <input type="text" id="webhook-url" value="${esc(PUBLIC_URL)}/webhook" readonly onclick="this.select();" style="flex:1;min-width:240px;padding:6px 10px;font-family:monospace;font-size:12px;background:#fff;border:1px solid #b5d4f4;border-radius:5px;color:#0c447c;"/>
+        <button type="button" onclick="(function(b){var i=document.getElementById('webhook-url');i.select();document.execCommand('copy');var t=b.innerText;b.innerText='✓ Copied';setTimeout(function(){b.innerText=t;},1200);})(this)" style="padding:6px 12px;background:#3a8dde;color:#fff;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;">📋 Copy</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span style="font-size:11px;color:#0c447c;font-weight:600;min-width:100px;">Verify Token</span>
+        <input type="text" id="verify-token" value="${esc(VERIFY_TOKEN)}" readonly onclick="this.select();" style="flex:1;min-width:240px;padding:6px 10px;font-family:monospace;font-size:12px;background:#fff;border:1px solid #b5d4f4;border-radius:5px;color:#0c447c;"/>
+        <button type="button" onclick="(function(b){var i=document.getElementById('verify-token');i.select();document.execCommand('copy');var t=b.innerText;b.innerText='✓ Copied';setTimeout(function(){b.innerText=t;},1200);})(this)" style="padding:6px 12px;background:#3a8dde;color:#fff;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;">📋 Copy</button>
+      </div>
+      <div style="font-size:11px;color:#4a5568;margin-top:8px;">Subscribe to: <code>messages</code>, <code>messaging_postbacks</code>, <code>messaging_optins</code>, <code>message_reads</code>, <code>message_deliveries</code></div>
     </div>
 
     ${anyBroadcastRunning ? '<meta http-equiv="refresh" content="10"/>' : ''}
@@ -2023,6 +2185,7 @@ function renderPageView(page, req) {
           <textarea name="fans" placeholder="Paste fan PSIDs — one per line or comma-separated" style="flex:1;min-height:38px;max-height:60px;padding:7px;font-family:monospace;font-size:11px;resize:vertical;"></textarea>
           <button type="submit" class="qbtn" style="background:#16a34a;padding:8px 12px;">⬆️ Import</button>
         </form>
+        <a href="/import-contacts?page=${pid}" class="qbtn" style="background:#2563eb;padding:8px 12px;text-decoration:none;" onclick="return confirm('Import all contacts from Facebook for this page?')">📥 Import from FB</a>
         <a href="/export-fans?page=${pid}" class="qbtn" style="background:#3a8dde;padding:8px 12px;text-decoration:none;" download="fans-${pid}.txt">⬇️ Export</a>
         <form action="/clear-fans?page=${pid}" method="POST" style="margin:0;">
           <button type="submit" class="qbtn" style="background:#dc2626;padding:8px 12px;" onclick="return confirm('Remove ALL ${fans.length} fans? Cannot be undone!')">🗑️ Clear Fans</button>
@@ -2981,6 +3144,158 @@ app.post('/restore-backup', upload.single('backupFile'), (req, res) => {
 // ============================================
 app.get('/broadcast-progress', (req, res) => {
   res.json(broadcastProgress);
+});
+
+app.get('/broadcast-status', (req, res) => {
+  const pageId = req.query.page;
+  const b = broadcastProgress[pageId];
+  if (!b) return res.json({ active: false });
+  const elapsed = (b.finishedAt || Date.now()) - b.startedAt;
+  res.json({ active: true, status: b.status, total: b.total, done: b.done, sent: b.sent, failed: b.failed, remaining: Math.max(0, b.total - b.done), type: b.type, elapsedSec: Math.round(elapsed / 1000) });
+});
+
+// ============================================
+// IMPORT CONTACTS (Facebook Graph API)
+// ============================================
+async function importContactsForPage(pageId) {
+  const page = getPage(pageId);
+  if (!page) throw new Error('Unknown page');
+  let all = [];
+  let url = `https://graph.facebook.com/v2.6/me/conversations?fields=participants&access_token=${page.accessToken}`;
+  while (url) {
+    const d = await fetch(url).then(r => r.json());
+    if (d.error) throw new Error(d.error.message);
+    (d.data || []).forEach(c => (c.participants?.data || []).forEach(p => {
+      if (p.id !== page.pageId && !all.includes(p.id)) all.push(p.id);
+    }));
+    url = d.paging?.next || null;
+  }
+  const combined = [...new Set([...loadFans(pageId), ...all])];
+  saveFansList(pageId, combined);
+  if (!page.baselineFans || page.baselineFans === 0) {
+    updatePage(pageId, { baselineFans: combined.length });
+  }
+  return { found: all.length, total: combined.length };
+}
+
+app.get('/import-contacts', async (req, res) => {
+  const pageId = req.query.page;
+  const page = getPage(pageId);
+  if (!page) return res.redirect('/?error=Unknown+page');
+  try {
+    const result = await importContactsForPage(pageId);
+    res.send(`${renderHead('Import')}
+      <div class="container"><div class="card">
+        <h2>✅ Import Complete for ${esc(page.label)}</h2>
+        <p>Found <strong>${result.found}</strong> contacts · Total fans: <strong>${result.total}</strong></p>
+        <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
+      </div></div></body></html>`);
+  } catch (e) {
+    res.send(`${renderHead('Import Error')}
+      <div class="container"><div class="card">
+        <h2>❌ ${esc(e.message)}</h2>
+        <a href="/?page=${encodeURIComponent(pageId)}" class="btn btn-green">← Back</a>
+      </div></div></body></html>`);
+  }
+});
+
+app.post('/import-contacts-json', async (req, res) => {
+  try {
+    const r = await importContactsForPage(req.query.page);
+    res.json({ ok: true, found: r.found, total: r.total });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/import-contacts-batch', async (req, res) => {
+  const pageIds = Array.isArray(req.body.pageIds) ? req.body.pageIds : [];
+  if (!pageIds.length) return res.json({ ok: false, error: 'No pages' });
+  const results = await Promise.allSettled(
+    pageIds.map(pid =>
+      importContactsForPage(pid)
+        .then(r => ({ pid, ok: true, found: r.found, total: r.total }))
+        .catch(e => ({ pid, ok: false, error: e.message }))
+    )
+  );
+  const out = results.map(r => r.value || { pid: '', ok: false, error: 'unknown' });
+  res.json({ ok: true, results: out });
+});
+
+app.get('/find-psid', (req, res) => {
+  const psid = (req.query.psid || '').trim();
+  if (!psid) return res.json({ pages: [] });
+  const pages = loadPages();
+  const found = pages.filter(p => loadFans(p.pageId).includes(psid))
+    .map(p => ({ pageId: p.pageId, label: p.label }));
+  res.json({ pages: found });
+});
+
+// ============================================
+// BULK OPS — Clear All Fans, Redeploy, Bulk Add Pages
+// ============================================
+app.post('/clear-all-fans', (req, res) => {
+  const pages = loadPages();
+  let cleared = 0;
+  pages.forEach(p => { try { saveFansList(p.pageId, []); cleared++; } catch(e) {} });
+  res.json({ ok: true, cleared });
+});
+
+app.post('/bulk-add-pages', (req, res) => {
+  const pages = req.body.pages;
+  if (!Array.isArray(pages) || !pages.length) return res.json({ ok: false, error: 'No pages provided' });
+  let added = 0, skipped = 0;
+  pages.forEach(p => {
+    if (!p.pageId || !p.token) { skipped++; return; }
+    const result = addPage({
+      pageId: String(p.pageId).trim(),
+      accessToken: String(p.token).trim(),
+      label: (p.name || '').trim() || `Page ${p.pageId}`
+    });
+    if (result) { added++; try { setupMessenger(result); } catch {} }
+    else { skipped++; }
+  });
+  res.json({ ok: true, added, skipped });
+});
+
+app.post('/redeploy', async (req, res) => {
+  const token = process.env.RAILWAY_API_TOKEN;
+  const serviceId = process.env.RAILWAY_SERVICE_ID;
+  if (!token) return res.json({ ok: false, error: 'RAILWAY_API_TOKEN not set' });
+  if (!serviceId) return res.json({ ok: false, error: 'RAILWAY_SERVICE_ID not set' });
+  try {
+    const r1 = await fetch('https://backboard.railway.app/graphql/v2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ query: `query { service(id: "${serviceId}") { deployments(first: 1) { edges { node { id } } } } }` })
+    });
+    const d1 = await r1.json();
+    if (d1.errors) return res.json({ ok: false, error: d1.errors[0].message });
+    const depId = d1.data?.service?.deployments?.edges?.[0]?.node?.id;
+    if (!depId) return res.json({ ok: false, error: 'No deployment found for this service' });
+    const r2 = await fetch('https://backboard.railway.app/graphql/v2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ query: `mutation { deploymentRedeploy(id: "${depId}") { id } }` })
+    });
+    const d2 = await r2.json();
+    if (d2.errors) return res.json({ ok: false, error: d2.errors[0].message });
+    res.json({ ok: true });
+  } catch(e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/pages-reorder', (req, res) => {
+  const order = req.body.order;
+  if (!Array.isArray(order) || !order.length) return res.json({ ok: false, error: 'No order provided' });
+  const pages = loadPages();
+  const pageMap = {};
+  pages.forEach(p => { pageMap[p.pageId] = p; });
+  const reordered = order.filter(id => pageMap[id]).map(id => pageMap[id]);
+  const missing = pages.filter(p => !order.includes(p.pageId));
+  savePages([...reordered, ...missing]);
+  res.json({ ok: true });
 });
 
 // ============================================
