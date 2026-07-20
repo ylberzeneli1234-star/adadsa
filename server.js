@@ -2206,12 +2206,8 @@ function renderPageView(page, req) {
         </div>
       </div>
 
-      <!-- Import Fans + Clear -->
-      <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
-        <form action="/import-fans?page=${pid}" method="POST" style="margin:0;display:flex;gap:6px;align-items:flex-start;flex:1;min-width:250px;">
-          <textarea name="fans" placeholder="Paste fan PSIDs — one per line or comma-separated" style="flex:1;min-height:38px;max-height:60px;padding:7px;font-family:monospace;font-size:11px;resize:vertical;"></textarea>
-          <button type="submit" class="qbtn" style="background:#16a34a;padding:8px 12px;">⬆️ Import</button>
-        </form>
+      <!-- Fan Actions -->
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <a href="/import-contacts?page=${pid}" class="qbtn" style="background:#2563eb;padding:8px 12px;text-decoration:none;" onclick="return confirm('Import all contacts from Facebook for this page?')">📥 Import from FB</a>
         <a href="/export-fans?page=${pid}" class="qbtn" style="background:#3a8dde;padding:8px 12px;text-decoration:none;" download="fans-${pid}.txt">⬇️ Export</a>
         <form action="/clear-fans?page=${pid}" method="POST" style="margin:0;">
@@ -2221,11 +2217,10 @@ function renderPageView(page, req) {
     </div>
 
     <!-- ═══ CONTENT MODE + SEND MODE ═══ -->
-    <div class="card" style="border:2px solid #e9d5ff;">
-      <h2>🎚️ Content Mode &amp; Send Mode</h2>
-      <div style="margin-bottom:14px;">
-        <div style="font-size:13px;font-weight:700;color:#6b21a8;margin-bottom:6px;">Card Source: ${hasContentOverride ? '<span style="background:#fbbf24;color:#92400e;padding:2px 8px;border-radius:6px;font-size:11px;margin-left:4px;">PAGE OVERRIDE</span>' : '<span style="color:#16a34a;font-size:11px;margin-left:4px;">(using global)</span>'}</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    <div class="card" style="border:2px solid #e9d5ff;padding:14px 22px;">
+      <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:13px;font-weight:700;color:#6b21a8;">Card Source:</span>
           <form action="/set-page-mode?page=${pid}" method="POST" style="margin:0;">
             <input type="hidden" name="mode" value="classic"/>
             <button type="submit" class="qbtn" style="background:${mode === 'classic' ? '#16a34a' : '#cbd5e1'};color:${mode === 'classic' ? '#fff' : '#475569'};">${mode === 'classic' ? '✓ ' : ''}📷 Classic</button>
@@ -2236,13 +2231,15 @@ function renderPageView(page, req) {
           </form>
           ${hasContentOverride ? `<form action="/set-page-mode?page=${pid}" method="POST" style="margin:0;">
             <input type="hidden" name="mode" value="global"/>
-            <button type="submit" class="qbtn" style="background:#fbbf24;color:#92400e;">↩ Use Global</button>
+            <button type="submit" class="qbtn" style="background:#fbbf24;color:#92400e;">↩ Global</button>
           </form>` : ''}
+          ${hasContentOverride ? '<span style="background:#fbbf24;color:#92400e;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">OVERRIDE</span>' : '<span style="color:#16a34a;font-size:10px;font-weight:600;">(global)</span>'}
         </div>
-      </div>
-      <div>
-        <div style="font-size:13px;font-weight:700;color:#6b21a8;margin-bottom:6px;">Send Mode: ${hasSendOverride ? '<span style="background:#fbbf24;color:#92400e;padding:2px 8px;border-radius:6px;font-size:11px;margin-left:4px;">PAGE OVERRIDE</span>' : '<span style="color:#16a34a;font-size:11px;margin-left:4px;">(using global)</span>'}</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+
+        <span style="width:1px;height:24px;background:#e9d5ff;"></span>
+
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:13px;font-weight:700;color:#6b21a8;">Send Mode:</span>
           ${['card', 'text', 'card+text'].map(m => {
             const labels = { 'card': '📷 Card Only', 'text': '💬 Text Only', 'card+text': '📷💬 Card + Text' };
             const active = sMode === m;
@@ -2253,9 +2250,10 @@ function renderPageView(page, req) {
           }).join('')}
           ${hasSendOverride ? `<form action="/set-page-send-mode?page=${pid}" method="POST" style="margin:0;">
             <input type="hidden" name="mode" value="global"/>
-            <button type="submit" class="qbtn" style="background:#fbbf24;color:#92400e;">↩ Use Global</button>
+            <button type="submit" class="qbtn" style="background:#fbbf24;color:#92400e;">↩ Global</button>
           </form>` : ''}
-          ${sMode !== 'card' ? `<span style="font-size:11px;color:#7c3aed;">(${(lib.textPool || []).length} texts in pool)</span>` : ''}
+          ${hasSendOverride ? '<span style="background:#fbbf24;color:#92400e;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">OVERRIDE</span>' : '<span style="color:#16a34a;font-size:10px;font-weight:600;">(global)</span>'}
+          ${sMode !== 'card' ? `<span style="font-size:11px;color:#7c3aed;">(${(lib.textPool || []).length} texts)</span>` : ''}
         </div>
       </div>
     </div>
@@ -2314,8 +2312,14 @@ function renderPageView(page, req) {
     </div>
 
     <!-- ═══ PAGE PHOTOS ═══ -->
-    <div class="card">
-      <h2>📸 Photos <span style="font-size:12px;font-weight:400;color:#94a3b8;">(${(page.photos||[]).length} on this page)</span></h2>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <details>
+        <summary style="cursor:pointer;padding:16px 22px;display:flex;align-items:center;gap:10px;user-select:none;list-style:none;">
+          <span style="font-size:14px;color:#8b5cf6;transition:transform 0.2s;display:inline-block;" class="bp-arrow">▶</span>
+          <span style="font-size:16px;font-weight:700;color:#1a1d2e;">📸 Photos</span>
+          <span style="font-size:12px;color:#94a3b8;">(${(page.photos||[]).length} on this page)</span>
+        </summary>
+        <div style="padding:0 22px 22px;">
       <div class="photo-grid">
         ${(page.photos || []).map((url, i) => {
           const isCurrent = url === page.currentPhoto;
@@ -2338,6 +2342,8 @@ function renderPageView(page, req) {
         <input name="photoUrl" placeholder="https://i.imgur.com/xxxxx.png" style="flex:1;"/>
         <button type="submit" class="btn btn-green">+ Add</button>
       </form>
+        </div>
+      </details>
     </div>
 
     <!-- ═══ SETTINGS ═══ -->
