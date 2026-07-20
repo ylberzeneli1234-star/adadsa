@@ -1977,14 +1977,20 @@ function renderAllPagesView(pages, req) {
         <form action="/set-cleanup-all" method="POST" style="display:inline;margin:0;">
           <div style="display:flex;gap:6px;align-items:center;">
             <span style="font-size:12px;font-weight:700;color:#166534;">🛡️ Auto-remove:</span>
-            <select name="cleanupThreshold" style="padding:7px 10px;border:1px solid #86efac;border-radius:6px;font-size:13px;background:#fff;color:#166534;font-weight:600;">
-              <option value="0">0 — Disabled (never remove)</option>
-              <option value="1">1 — Remove on 1st failure</option>
-              <option value="2">2 — After 2 failures</option>
-              <option value="3">3 — After 3 failures</option>
-              <option value="5">5 — Very safe</option>
-              <option value="10">10 — Almost never remove</option>
-            </select>
+            ${(function(){
+              const cur = pages[0]?.cleanupThreshold !== undefined ? pages[0].cleanupThreshold : 0;
+              const opts = [
+                {v:0, l:'0 — Disabled (never remove)'},
+                {v:1, l:'1 — Remove on 1st failure'},
+                {v:2, l:'2 — After 2 failures'},
+                {v:3, l:'3 — After 3 failures'},
+                {v:5, l:'5 — Very safe'},
+                {v:10, l:'10 — Almost never remove'}
+              ];
+              return '<select name="cleanupThreshold" style="padding:7px 10px;border:1px solid #86efac;border-radius:6px;font-size:13px;background:#fff;color:#166534;font-weight:600;">' +
+                opts.map(o => '<option value="' + o.v + '"' + (o.v === cur ? ' selected' : '') + '>' + o.l + '</option>').join('') +
+                '</select>';
+            })()}
             <button type="submit" class="qbtn" style="background:#0f766e;" onclick="return confirm('Set this auto-remove threshold on ALL ${pages.length} pages?')">Apply to All</button>
           </div>
         </form>
