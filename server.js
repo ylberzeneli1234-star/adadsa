@@ -1966,6 +1966,23 @@ function renderAllPagesView(pages, req) {
             <button type="submit" class="qbtn" style="background:#0f766e;" onclick="return confirm('Set this spacing on ALL ${pages.length} pages?')">Apply to All</button>
           </div>
         </form>
+
+        <span style="color:#cbd5e1;font-size:18px;">|</span>
+
+        <form action="/set-cleanup-all" method="POST" style="display:inline;margin:0;">
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span style="font-size:12px;font-weight:700;color:#166534;">🛡️ Auto-remove:</span>
+            <select name="cleanupThreshold" style="padding:7px 10px;border:1px solid #86efac;border-radius:6px;font-size:13px;background:#fff;color:#166534;font-weight:600;">
+              <option value="0">0 — Disabled (never remove)</option>
+              <option value="1">1 — Remove on 1st failure</option>
+              <option value="2">2 — After 2 failures</option>
+              <option value="3">3 — After 3 failures</option>
+              <option value="5">5 — Very safe</option>
+              <option value="10">10 — Almost never remove</option>
+            </select>
+            <button type="submit" class="qbtn" style="background:#0f766e;" onclick="return confirm('Set this auto-remove threshold on ALL ${pages.length} pages?')">Apply to All</button>
+          </div>
+        </form>
       </div>
     </div>
 
@@ -2580,6 +2597,13 @@ app.post('/set-spacing-all', (req, res) => {
   const spacing = parseInt(req.body.spacingSeconds) || 10;
   loadPages().forEach(p => updatePage(p.pageId, { spacingSeconds: spacing }));
   res.redirect('/?saved=1&lib_msg=' + encodeURIComponent('Spacing set to ' + spacing + 's on all pages'));
+});
+app.post('/set-cleanup-all', (req, res) => {
+  const threshold = parseInt(req.body.cleanupThreshold);
+  const val = isNaN(threshold) ? 0 : threshold;
+  loadPages().forEach(p => updatePage(p.pageId, { cleanupThreshold: val }));
+  const label = val === 0 ? 'Disabled (never remove)' : 'Remove after ' + val + ' failure(s)';
+  res.redirect('/?saved=1&lib_msg=' + encodeURIComponent('Auto-remove set to: ' + label + ' on all pages'));
 });
 app.post('/reset-stats', (req, res) => {
   resetStats(req.query.page);
