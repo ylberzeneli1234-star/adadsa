@@ -1055,8 +1055,14 @@ function renderGroupManager(pages) {
   }).join('');
 
   return `
-    <div class="card" style="border:2px solid #c4b5fd;">
-      <h2>\ud83d\udce6 Page Groups <span style="font-size:12px;font-weight:400;color:#7c3aed;">\u2014 send to Part 1, Part 2, Part 3 separately or all at once</span></h2>
+    <div class="card" style="border:2px solid #c4b5fd;padding:0;overflow:hidden;">
+      <details>
+        <summary style="cursor:pointer;padding:16px 22px;display:flex;align-items:center;gap:10px;user-select:none;list-style:none;">
+          <span style="font-size:14px;color:#8b5cf6;transition:transform 0.2s;display:inline-block;" class="bp-arrow">▶</span>
+          <span style="font-size:16px;font-weight:700;color:#1a1d2e;">\ud83d\udce6 Page Groups</span>
+          <span style="font-size:12px;color:#7c3aed;">${groups.length} groups · ${pages.length - unassigned.length} assigned · ${unassigned.length} unassigned</span>
+        </summary>
+        <div style="padding:0 22px 22px;">
 
       <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
         ${pills || '<span style="color:#94a3b8;font-size:13px;">No groups yet \u2014 create one below.</span>'}
@@ -1069,6 +1075,9 @@ function renderGroupManager(pages) {
         <input type="text" name="group" autocomplete="off" placeholder='New group name, e.g. "Part 1"' style="flex:1;min-width:200px;max-width:320px;padding:8px 12px;border:1px solid #c4b5fd;border-radius:6px;font-size:14px;"/>
         <button type="submit" class="btn" style="background:#6d28d9;color:#fff;margin-top:0;">\u2795 Create Group</button>
       </form>
+
+        </div>
+      </details>
     </div>`;
 }
 
@@ -1802,12 +1811,8 @@ function renderAllPagesView(pages, req) {
     ${renderAlerts(req)}
     ${renderMasterRedirectBanner()}
 
-    <div class="grid" style="margin-bottom:18px;">
-      <div class="stat"><div class="v">${pages.length}</div><div class="l">Pages</div></div>
-      <div class="stat"><div class="v">${totalFans.toLocaleString()}</div><div class="l">Total Fans</div></div>
-      <div class="stat"><div class="v"><span style="color:#166534;">${totalSent.toLocaleString()} ✅</span> · <span style="color:#dc2626;">${totalFailed.toLocaleString()} ❌</span></div><div class="l">Messages Today</div></div>
-      <div class="stat"><div class="v">${totalClicks}</div><div class="l">Clicks Today</div></div>
-      <div class="stat"><div class="v">${autoOn}/${pages.length}</div><div class="l">Auto ON</div></div>
+    <div style="margin-bottom:18px;">
+      <div class="stat" style="display:inline-block;"><div class="v">${pages.length}</div><div class="l">Pages</div></div>
     </div>
 
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
