@@ -1741,7 +1741,7 @@ function renderAllPagesView(pages, req) {
     }
 
     return `<tr>
-      <td style="white-space:nowrap;"><a href="/?page=${esc(p.pageId)}" style="font-weight:600;text-decoration:none;color:#3a8dde;">${esc(p.label)}</a></td>
+      <td style="white-space:nowrap;"><a href="/?page=${esc(p.pageId)}" style="font-weight:600;text-decoration:none;color:#3a8dde;">${esc(p.label)}</a><div style="font-size:10px;color:#94a3b8;font-family:monospace;">${esc(p.pageId)}</div></td>
       <td>${group}</td>
       <td>${fans.length}</td>
       <td>${(function(){
@@ -2079,7 +2079,7 @@ function renderAllPagesView(pages, req) {
       <div style="font-size:11px;color:#4a5568;margin-top:8px;">Subscribe to: <code>messages</code>, <code>messaging_postbacks</code>, <code>messaging_optins</code>, <code>message_reads</code>, <code>message_deliveries</code></div>
     </div>
 
-    ${anyBroadcastRunning ? '<meta http-equiv="refresh" content="10"/>' : ''}
+    
   </div>`;
 }
 
@@ -2116,8 +2116,7 @@ function renderPageView(page, req) {
         · ETA: ~${Math.max(0, Math.ceil(((broadcastInfo.total - broadcastInfo.done) * (page.spacingSeconds || 10)) / 60))} min
       </div>
       <div style="background:#bfdbfe;border-radius:8px;height:14px;overflow:hidden;"><div style="background:#3a8dde;height:100%;width:${Math.round(broadcastInfo.done/broadcastInfo.total*100)}%;border-radius:8px;transition:width 0.3s;"></div></div>
-      <div style="font-size:11px;color:#2563eb;margin-top:6px;">Page auto-refreshes — or <a href="/?page=${pid}">manual refresh</a></div>
-      <meta http-equiv="refresh" content="10;url=/?page=${pid}"/>
+      <div style="font-size:11px;color:#2563eb;margin-top:6px;"><a href="/?page=${pid}">🔄 Refresh</a> to see latest progress</div>
     </div>` : '';
 
   const textMsgs = (Array.isArray(page.textMessages) ? page.textMessages : []);
