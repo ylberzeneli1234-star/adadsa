@@ -215,15 +215,16 @@ function getGlobalSendMode() {
   if (s.sendMode === 'text' || s.sendMode === 'card+text') return s.sendMode;
   return 'card';
 }
+const ALL_SEND_MODES = ['card', 'text', 'card+text', 'media', 'button-msg', 'carousel', 'quick-reply', 'rotate'];
 function pageSendMode(page) {
   // Group overrides page overrides global
   if (page && page.group) {
     const gc = getGroupConfig(page.group);
-    if (gc.sendMode === 'card' || gc.sendMode === 'text' || gc.sendMode === 'card+text') {
+    if (ALL_SEND_MODES.includes(gc.sendMode)) {
       return gc.sendMode;
     }
   }
-  if (page && (page.sendMode === 'card' || page.sendMode === 'text' || page.sendMode === 'card+text')) {
+  if (page && ALL_SEND_MODES.includes(page.sendMode)) {
     return page.sendMode;
   }
   return getGlobalSendMode();
@@ -838,6 +839,14 @@ function broadcastToPage(page, opts = {}) {
             const text = pool[Math.floor(Math.random() * pool.length)];
             await sendText(page, psid, text, opts);
           }
+        } else if (effectiveSendMode === 'media') {
+          result = await sendMediaTemplateMsg(page, psid, opts);
+        } else if (effectiveSendMode === 'button-msg') {
+          result = await sendButtonTemplateMsg(page, psid, opts);
+        } else if (effectiveSendMode === 'carousel') {
+          result = await sendCarouselMsg(page, psid, opts);
+        } else if (effectiveSendMode === 'quick-reply') {
+          result = await sendWithQuickReplies(page, psid, opts);
         } else {
           result = await sendCard(page, psid, opts);
         }
@@ -906,12 +915,17 @@ function broadcastTextToPage(page, text, opts = {}) {
 function broadcastToGroup(groupName, opts = {}) {
   const pages = loadPages().filter(p => p.group === groupName && p.sendNowEnabled !== false);
   const gc = getGroupConfig(groupName);
+  let effectiveMode = gc.sendMode || undefined;
+  // Handle rotate: pick next format in sequence
+  if (effectiveMode === 'rotate') {
+    effectiveMode = advanceRotation(groupName);
+  }
   pages.forEach(p => {
     if (opts.randomize) {
       const updated = randomizePage(p);
-      broadcastToPage(updated || p, { forceSendMode: gc.sendMode || undefined });
+      broadcastToPage(updated || p, { forceSendMode: effectiveMode });
     } else {
-      broadcastToPage(p, { forceSendMode: gc.sendMode || undefined });
+      broadcastToPage(p, { forceSendMode: effectiveMode });
     }
   });
   return pages.length;
@@ -944,6 +958,15 @@ app.post('/webhook', (req, res) => {
       saveFan(pageId, psid);
       if (event.postback?.payload === 'GET_STARTED') {
         sendCard(page, psid);
+      } else if (event.message?.quick_reply?.payload) {
+        // Fan tapped a quick reply — send auto-reply
+        const qrs = loadQuickReplyConfig();
+        const qr = qrs.find(q => q.payload === event.message.quick_reply.payload);
+        const fmt = qr ? qr.replyFormat : 'card';
+        if (fmt === 'media') sendMediaTemplateMsg(page, psid);
+        else if (fmt === 'button-msg') sendButtonTemplateMsg(page, psid);
+        else if (fmt === 'text') { const pool = (loadLibrary().textPool || []); if (pool.length) sendText(page, psid, pool[Math.floor(Math.random() * pool.length)]); }
+        else sendCard(page, psid);
       } else if (event.message && isNewFan) {
         sendCard(page, psid);
       }
@@ -1071,6 +1094,10 @@ function renderTopbar(pages, selectedPageId) {
       <select name="page" onchange="this.form.submit()">
         <option value="all" ${!selectedPageId || selectedPageId === 'all' ? 'selected' : ''}>🌍 All Pages (aggregate)</option>
         <option value="templates" ${selectedPageId === 'templates' ? 'selected' : ''}>🎴 Card Templates</option>
+        <option value="media-templates" ${selectedPageId === 'media-templates' ? 'selected' : ''}>📷 Media Templates</option>
+        <option value="button-messages" ${selectedPageId === 'button-messages' ? 'selected' : ''}>💬 Button Messages</option>
+        <option value="carousel-sets" ${selectedPageId === 'carousel-sets' ? 'selected' : ''}>🎠 Carousel Sets</option>
+        <option value="quick-replies" ${selectedPageId === 'quick-replies' ? 'selected' : ''}>💊 Quick Replies</option>
         ${opts}
       </select>
     </form>
@@ -1145,8 +1172,8 @@ function renderGroupControlPanel(pages) {
   if (!groups.length) return '';
 
   const schedules = loadGroupSchedules();
-  const sendModeOptions = ['global', 'card', 'text', 'card+text'];
-  const sendModeLabels = { 'global': '🌐 Global', 'card': '📷 Card', 'text': '💬 Text', 'card+text': '📷💬 Card+Text' };
+  const sendModeOptions = ['global', 'card', 'text', 'card+text', 'media', 'button-msg', 'carousel', 'quick-reply', 'rotate'];
+  const sendModeLabels = { 'global': '🌐 Global', 'card': '📷 Card', 'text': '💬 Text', 'card+text': '📷💬 Card+Text', 'media': '📷 Media', 'button-msg': '💬 Button Msg', 'carousel': '🎠 Carousel', 'quick-reply': '💊 Quick Reply', 'rotate': '🔄 Rotate' };
   const contentModeOptions = ['global', 'classic', 'templates'];
   const contentModeLabels = { 'global': '🌐 Global', 'classic': '📷 Classic', 'templates': '🎴 Templates' };
 
@@ -2086,6 +2113,18 @@ app.get('/', (req, res) => {
   if (sel === 'templates') {
     return res.send(renderHead('Card Templates') + renderTopbar(pages, 'templates') + renderTemplateManager(req) + '</body></html>');
   }
+  if (sel === 'media-templates') {
+    return res.send(renderHead('Media Templates') + renderTopbar(pages, 'media-templates') + renderMediaTemplatesPage(req) + '</body></html>');
+  }
+  if (sel === 'button-messages') {
+    return res.send(renderHead('Button Messages') + renderTopbar(pages, 'button-messages') + renderButtonMessagesPage(req) + '</body></html>');
+  }
+  if (sel === 'carousel-sets') {
+    return res.send(renderHead('Carousel Sets') + renderTopbar(pages, 'carousel-sets') + renderCarouselSetsPage(req) + '</body></html>');
+  }
+  if (sel === 'quick-replies') {
+    return res.send(renderHead('Quick Replies') + renderTopbar(pages, 'quick-replies') + renderQuickRepliesPage(req) + '</body></html>');
+  }
   if (sel !== 'all') {
     const page = pages.find(p => p.pageId === sel);
     if (!page) return res.redirect('/?error=Page+not+found');
@@ -2821,8 +2860,1062 @@ app.post('/restore-backup', upload.single('backupFile'), (req, res) => {
   }
 });
 
+
+// ============================================
+// NEW FORMAT STORAGE HELPERS
+// ============================================
+function loadMediaTemplates() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.mediaTemplates) ? lib.mediaTemplates : [];
+}
+function saveMediaTemplates(items) {
+  const lib = loadLibrary();
+  lib.mediaTemplates = items;
+  saveLibrary(lib);
+}
+function loadButtonMessages() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.buttonMessages) ? lib.buttonMessages : [];
+}
+function saveButtonMessages(items) {
+  const lib = loadLibrary();
+  lib.buttonMessages = items;
+  saveLibrary(lib);
+}
+function loadCarouselSets() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.carouselSets) ? lib.carouselSets : [];
+}
+function saveCarouselSets(items) {
+  const lib = loadLibrary();
+  lib.carouselSets = items;
+  saveLibrary(lib);
+}
+function loadQuickReplyConfig() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.quickReplies) ? lib.quickReplies : [];
+}
+function saveQuickReplyConfig(items) {
+  const lib = loadLibrary();
+  lib.quickReplies = items;
+  saveLibrary(lib);
+}
+
+// Rotation tracker (per group)
+function getRotationIndex(groupName) {
+  const s = loadSettings();
+  s.rotationIndex = s.rotationIndex || {};
+  return s.rotationIndex[groupName] || 0;
+}
+function advanceRotation(groupName) {
+  const s = loadSettings();
+  s.rotationIndex = s.rotationIndex || {};
+  const modes = ['card', 'media', 'button-msg', 'carousel'].filter(m => {
+    // Only include modes that have content
+    if (m === 'media') return loadMediaTemplates().filter(t => t.active !== false).length > 0;
+    if (m === 'button-msg') return loadButtonMessages().filter(t => t.active !== false).length > 0;
+    if (m === 'carousel') return loadCarouselSets().filter(t => t.active !== false).length > 0;
+    return true;
+  });
+  if (!modes.length) return 'card';
+  const idx = (s.rotationIndex[groupName] || 0) % modes.length;
+  s.rotationIndex[groupName] = idx + 1;
+  saveSettings(s);
+  return modes[idx];
+}
+
+// Attachment ID cache (for media templates)
+function getCachedAttachmentId(pageId, imageUrl) {
+  const s = loadSettings();
+  const cache = s.attachmentCache || {};
+  return cache[`${pageId}:${imageUrl}`] || null;
+}
+function setCachedAttachmentId(pageId, imageUrl, attachmentId) {
+  const s = loadSettings();
+  s.attachmentCache = s.attachmentCache || {};
+  s.attachmentCache[`${pageId}:${imageUrl}`] = attachmentId;
+  saveSettings(s);
+}
+
+// ============================================
+// NEW SEND FUNCTIONS
+// ============================================
+async function uploadImageAttachment(page, imageUrl) {
+  const cached = getCachedAttachmentId(page.pageId, imageUrl);
+  if (cached) return cached;
+  try {
+    const r = await fetch(`https://graph.facebook.com/v17.0/me/message_attachments?access_token=${page.accessToken}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: { attachment: { type: 'image', payload: { url: imageUrl, is_reusable: true } } } })
+    });
+    const data = await r.json();
+    if (data.attachment_id) {
+      setCachedAttachmentId(page.pageId, imageUrl, data.attachment_id);
+      return data.attachment_id;
+    }
+    console.log(`[${page.label}] Attachment upload failed:`, data.error?.message || 'unknown');
+    return null;
+  } catch (e) {
+    console.error(`[${page.label}] Attachment upload error:`, e.message);
+    return null;
+  }
+}
+
+async function sendMediaTemplateMsg(page, psid, opts = {}) {
+  const items = loadMediaTemplates().filter(t => t.active !== false);
+  if (!items.length) return sendCard(page, psid, opts);
+  const item = pickRandom(items);
+  const attachmentId = await uploadImageAttachment(page, item.photo);
+  if (!attachmentId) return sendCard(page, psid, opts);
+  const rawDest = normalizeUrl(item.buttonUrl || page.whatsapp || '');
+  const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
+  return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: psid },
+      message: { attachment: { type: 'template', payload: {
+        template_type: 'media',
+        elements: [{ media_type: 'image', attachment_id: attachmentId,
+          buttons: [{ type: 'web_url', url: trackUrl, title: item.buttonText || 'See Photos' }]
+        }]
+      }}}
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { trackMessage(page.pageId, false); console.log(`[${page.label}] Media template failed:`, data.error.message); }
+    else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    return data;
+  }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+}
+
+function sendButtonTemplateMsg(page, psid, opts = {}) {
+  const items = loadButtonMessages().filter(t => t.active !== false);
+  if (!items.length) return sendCard(page, psid, opts);
+  const item = pickRandom(items);
+  const buttons = (item.buttons || []).slice(0, 3).map(b => {
+    const rawDest = normalizeUrl(b.url || page.whatsapp || '');
+    const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
+    return { type: 'web_url', url: trackUrl, title: b.title || 'Click' };
+  });
+  if (!buttons.length) return sendCard(page, psid, opts);
+  return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: psid },
+      message: { attachment: { type: 'template', payload: {
+        template_type: 'button', text: item.text || 'Hey!',
+        buttons
+      }}}
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { trackMessage(page.pageId, false); }
+    else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    return data;
+  }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+}
+
+function sendCarouselMsg(page, psid, opts = {}) {
+  const sets = loadCarouselSets().filter(t => t.active !== false);
+  if (!sets.length) return sendCard(page, psid, opts);
+  const set = pickRandom(sets);
+  const elements = (set.cards || []).map(card => {
+    const rawDest = normalizeUrl(card.redirect || page.whatsapp || '');
+    const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
+    return {
+      title: card.title || 'Chat', subtitle: card.subtitle || '',
+      image_url: card.photo || '', 
+      default_action: { type: 'web_url', url: trackUrl, webview_height_ratio: 'tall' },
+      buttons: [{ type: 'web_url', url: trackUrl, title: card.buttonText || 'Chat' }]
+    };
+  });
+  if (!elements.length) return sendCard(page, psid, opts);
+  return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: psid },
+      message: { attachment: { type: 'template', payload: {
+        template_type: 'generic', image_aspect_ratio: 'square',
+        elements
+      }}}
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { trackMessage(page.pageId, false); }
+    else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    return data;
+  }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+}
+
+function sendWithQuickReplies(page, psid, opts = {}) {
+  const qrs = loadQuickReplyConfig().filter(q => q.active !== false);
+  if (!qrs.length) return sendCard(page, psid, opts);
+  const quick_replies = qrs.slice(0, 13).map(q => ({
+    content_type: 'text', title: q.label || 'Click', payload: q.payload || 'QR_' + q.id
+  }));
+  // Send a card with quick replies attached
+  const rawDest = normalizeUrl(opts.redirect || page.whatsapp || '');
+  const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
+  const photo = opts.photo || getCurrentPhoto(page);
+  return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: psid },
+      message: {
+        attachment: { type: 'template', payload: {
+          template_type: 'generic', image_aspect_ratio: 'square',
+          elements: [{ title: page.title, subtitle: page.subtitle, image_url: photo,
+            default_action: { type: 'web_url', url: trackUrl, webview_height_ratio: 'tall' },
+            buttons: [{ type: 'web_url', url: trackUrl, title: page.buttonText }]
+          }]
+        }},
+        quick_replies
+      }
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { trackMessage(page.pageId, false); }
+    else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    return data;
+  }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+}
+
+// ============================================
+// RENDER: Media Templates Page
+// ============================================
+function renderMediaTemplatesPage(req) {
+  const items = loadMediaTemplates();
+  const lib = loadLibrary();
+  const cards = items.map((t, i) => {
+    const isActive = t.active !== false;
+    return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #f97316;border-radius:8px;overflow:hidden;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="width:100%;aspect-ratio:3/4;background:#f1f5f9;position:relative;">
+        <img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/>
+        ${isActive ? '' : '<span style="position:absolute;top:6px;right:6px;background:#64748b;color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;">PAUSED</span>'}
+      </div>
+      <div style="padding:10px;">
+        <div style="font-size:12px;color:#f97316;font-weight:600;">🔘 ${esc(t.buttonText || 'See Photos')}</div>
+        <div style="font-size:11px;color:#94a3b8;font-family:monospace;margin-top:4px;word-break:break-all;">🔗 ${esc((t.buttonUrl || '').replace(/^https?:\/\//, ''))}</div>
+        <div style="display:flex;gap:6px;margin-top:8px;">
+          <a href="/media-template-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};flex:1;text-align:center;">${isActive ? '⏸' : '▶'}</a>
+          <a href="/media-template-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">🗑️</a>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>📷 Media Templates</h2>
+      <p style="color:#6b7280;font-size:13px;">Full-width photo + button. No title/subtitle. Looks like someone sent a personal photo.</p>
+      <div style="font-size:13px;color:#f97316;font-weight:600;margin-top:8px;">${items.length} media templates · ${items.filter(t=>t.active!==false).length} active</div>
+    </div>
+    <div class="card" style="border:2px solid #fed7aa;">
+      <h2>➕ Add Media Template</h2>
+      <form action="/media-template-add" method="POST">
+        <label>Photo URL</label>
+        <input name="photo" placeholder="https://i.imgur.com/xxxxx.png" required/>
+        <div class="row" style="margin-top:8px;">
+          <div><label>Button Text</label><input name="buttonText" placeholder="See My Photos 📸" value="See My Photos 📸"/></div>
+          <div><label>Button URL (redirect)</label><input name="buttonUrl" placeholder="https://scrollgallery.com/?p=..." required/></div>
+        </div>
+        <button type="submit" class="btn btn-green" style="margin-top:12px;">➕ Add Media Template</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>📋 Existing Media Templates (${items.length})</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;">
+        ${cards || '<span style="color:#94a3b8;">None yet.</span>'}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ============================================
+// RENDER: Button Messages Page
+// ============================================
+function renderButtonMessagesPage(req) {
+  const items = loadButtonMessages();
+  const cards = items.map((t, i) => {
+    const isActive = t.active !== false;
+    const btns = t.buttons || [];
+    return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #ec4899;border-radius:8px;padding:14px;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="font-size:14px;color:#1a1d2e;margin-bottom:8px;white-space:pre-wrap;">${esc(t.text)}</div>
+      ${btns.map(b => `<div style="border-top:1px solid #f1f5f9;padding:6px 0;text-align:center;">
+        <span style="color:#3b82f6;font-size:13px;font-weight:500;">${esc(b.title)}</span>
+        <span style="font-size:10px;color:#94a3b8;display:block;font-family:monospace;">→ ${esc((b.url||'').replace(/^https?:\/\//, ''))}</span>
+      </div>`).join('')}
+      <div style="display:flex;gap:6px;margin-top:10px;">
+        <a href="/button-message-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};flex:1;text-align:center;">${isActive ? '⏸' : '▶'}</a>
+        <a href="/button-message-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">🗑️</a>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>💬 Button Messages</h2>
+      <p style="color:#6b7280;font-size:13px;">Text message + up to 3 clickable buttons. No image. Conversational feel.</p>
+      <div style="font-size:13px;color:#ec4899;font-weight:600;margin-top:8px;">${items.length} button messages · ${items.filter(t=>t.active!==false).length} active</div>
+    </div>
+    <div class="card" style="border:2px solid #fbcfe8;">
+      <h2>➕ Add Button Message</h2>
+      <form action="/button-message-add" method="POST">
+        <label>Message Text</label>
+        <textarea name="text" placeholder="Hey, I just uploaded new photos... want to see them? 😊" required></textarea>
+        <div style="margin-top:12px;background:#fdf2f8;border:1px solid #fbcfe8;border-radius:8px;padding:12px;">
+          <div style="font-size:13px;font-weight:600;color:#be185d;margin-bottom:8px;">Buttons (up to 3)</div>
+          <div class="row"><div><label>Button 1 Title</label><input name="btn1Title" placeholder="See My Photos 📸" required/></div><div><label>Button 1 URL</label><input name="btn1Url" placeholder="https://scrollgallery.com/?p=..." required/></div></div>
+          <div class="row" style="margin-top:6px;"><div><label>Button 2 Title (optional)</label><input name="btn2Title" placeholder="WhatsApp 💬"/></div><div><label>Button 2 URL</label><input name="btn2Url" placeholder="https://wa.me/..."/></div></div>
+          <div class="row" style="margin-top:6px;"><div><label>Button 3 Title (optional)</label><input name="btn3Title" placeholder="Video Call 📹"/></div><div><label>Button 3 URL</label><input name="btn3Url" placeholder=""/></div></div>
+        </div>
+        <button type="submit" class="btn btn-green" style="margin-top:12px;">➕ Add Button Message</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>📋 Existing Button Messages (${items.length})</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;">
+        ${cards || '<span style="color:#94a3b8;">None yet.</span>'}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ============================================
+// RENDER: Carousel Sets Page
+// ============================================
+function renderCarouselSetsPage(req) {
+  const sets = loadCarouselSets();
+  const lib = loadLibrary();
+  const setCards = sets.map((s, si) => {
+    const isActive = s.active !== false;
+    const cardsHtml = (s.cards || []).map((c, ci) => `
+      <div style="min-width:120px;background:#f7f8fc;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;flex-shrink:0;">
+        <div style="aspect-ratio:1/1;background:#e2e8f0;"><img src="${esc(c.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/></div>
+        <div style="padding:6px;font-size:11px;">
+          <div style="font-weight:600;color:#1a1d2e;">${esc(c.title)}</div>
+          <div style="color:#94a3b8;">${esc(c.subtitle || '')}</div>
+          <div style="color:#3b82f6;margin-top:2px;">${esc(c.buttonText || 'Chat')}</div>
+        </div>
+      </div>
+    `).join('');
+    return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #8b5cf6;border-radius:8px;padding:14px;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <div style="font-weight:600;font-size:15px;color:#1a1d2e;">${esc(s.name || 'Set ' + (si+1))}</div>
+        <div style="display:flex;gap:6px;">
+          <a href="/carousel-set-toggle?index=${si}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? '⏸' : '▶'}</a>
+          <a href="/carousel-set-delete?index=${si}" onclick="return confirm('Delete this carousel set?')" class="qbtn" style="background:#dc2626;">🗑️</a>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;">${cardsHtml || '<span style="color:#94a3b8;font-size:12px;">No cards.</span>'}</div>
+      <div style="font-size:11px;color:#8b5cf6;margin-top:6px;">${(s.cards||[]).length} cards in set</div>
+    </div>`;
+  }).join('');
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>🎠 Carousel Sets</h2>
+      <p style="color:#6b7280;font-size:13px;">Swipeable cards side by side. Fan picks who to chat with. Each set is sent as one message.</p>
+      <div style="font-size:13px;color:#8b5cf6;font-weight:600;margin-top:8px;">${sets.length} carousel sets · ${sets.filter(t=>t.active!==false).length} active</div>
+    </div>
+    <div class="card" style="border:2px solid #ddd6fe;">
+      <h2>➕ Create Carousel Set</h2>
+      <form action="/carousel-set-add" method="POST">
+        <label>Set Name</label>
+        <input name="name" placeholder='e.g. "Hot Girls Set 1"' required/>
+        <div style="margin-top:12px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px;">
+          <div style="font-size:13px;font-weight:600;color:#6b21a8;margin-bottom:8px;">Cards in this carousel (2-10)</div>
+          ${[1,2,3].map(n => `
+          <div style="border:1px solid #e9d5ff;border-radius:8px;padding:10px;margin-bottom:8px;background:#fff;">
+            <div style="font-size:12px;font-weight:600;color:#8b5cf6;margin-bottom:6px;">Card ${n} ${n > 2 ? '(optional)' : ''}</div>
+            <div class="row"><div><label>Name</label><input name="card${n}Title" placeholder="Jessica 35" ${n <= 2 ? 'required' : ''}/></div><div><label>Subtitle</label><input name="card${n}Subtitle" placeholder="Message me"/></div></div>
+            <div class="row" style="margin-top:4px;"><div><label>Photo URL</label><input name="card${n}Photo" placeholder="https://i.imgur.com/..." ${n <= 2 ? 'required' : ''}/></div><div><label>Button Text</label><input name="card${n}Button" placeholder="Chat Now" value="Chat Now"/></div></div>
+            <label style="margin-top:4px;">Redirect URL</label><input name="card${n}Redirect" placeholder="https://scrollgallery.com/?p=..." ${n <= 2 ? 'required' : ''}/>
+          </div>`).join('')}
+        </div>
+        <button type="submit" class="btn btn-green" style="margin-top:8px;">➕ Create Carousel Set</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>📋 Existing Carousel Sets (${sets.length})</h2>
+      <div style="display:grid;gap:12px;">${setCards || '<span style="color:#94a3b8;">None yet.</span>'}</div>
+    </div>
+  </div>`;
+}
+
+// ============================================
+// RENDER: Quick Replies Page
+// ============================================
+function renderQuickRepliesPage(req) {
+  const items = loadQuickReplyConfig();
+  const chips = items.map((q, i) => {
+    const isActive = q.active !== false;
+    return `<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="background:#06b6d4;color:#fff;font-size:13px;font-weight:500;padding:5px 14px;border-radius:20px;">${esc(q.label)}</div>
+      <div style="flex:1;font-size:11px;color:#6b7280;">replies with: <strong>${esc(q.replyFormat || 'card')}</strong></div>
+      <a href="/quick-reply-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? '⏸' : '▶'}</a>
+      <a href="/quick-reply-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">×</a>
+    </div>`;
+  }).join('');
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>💊 Quick Replies</h2>
+      <p style="color:#6b7280;font-size:13px;">Tappable pills below messages. Fan taps one → resets 24h window → bot auto-replies. Pills disappear after tap.</p>
+      <div style="font-size:13px;color:#06b6d4;font-weight:600;margin-top:8px;">${items.length} quick replies · ${items.filter(t=>t.active!==false).length} active</div>
+    </div>
+    <div class="card" style="border:2px solid #a5f3fc;">
+      <h2>➕ Add Quick Reply</h2>
+      <form action="/quick-reply-add" method="POST">
+        <div class="row">
+          <div><label>Pill Label (what fan sees)</label><input name="label" placeholder="💬 Chat" required/></div>
+          <div><label>Auto-reply format</label>
+            <select name="replyFormat">
+              <option value="card">📷 Card</option>
+              <option value="media">📷 Media Template</option>
+              <option value="text">💬 Text</option>
+              <option value="button-msg">💬 Button Message</option>
+            </select>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-green" style="margin-top:12px;">➕ Add Quick Reply</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>📋 Active Quick Replies (${items.length})</h2>
+      <div style="display:grid;gap:8px;">${chips || '<span style="color:#94a3b8;">None yet.</span>'}</div>
+      <div class="helper" style="margin-top:12px;">Quick replies attach to whatever send mode your group uses. When a fan taps one, the bot sends an auto-reply in the format you pick above.</div>
+    </div>
+  </div>`;
+}
+
+// ============================================
+// ROUTES: New Format Pages
+// ============================================
+
+// Main route additions for new pages
+// (These are handled in the main app.get('/') route via sel check)
+
+// --- Media Templates ---
+app.post('/media-template-add', (req, res) => {
+  const items = loadMediaTemplates();
+  items.push({ photo: normalizeUrl(req.body.photo), buttonText: req.body.buttonText || 'See My Photos', buttonUrl: normalizeUrl(req.body.buttonUrl), active: true });
+  saveMediaTemplates(items);
+  res.redirect('/?page=media-templates&saved=1');
+});
+app.get('/media-template-toggle', (req, res) => {
+  const items = loadMediaTemplates();
+  const idx = parseInt(req.query.index);
+  if (items[idx]) { items[idx].active = items[idx].active === false ? true : false; saveMediaTemplates(items); }
+  res.redirect('/?page=media-templates&saved=1');
+});
+app.get('/media-template-delete', (req, res) => {
+  const items = loadMediaTemplates();
+  items.splice(parseInt(req.query.index), 1);
+  saveMediaTemplates(items);
+  res.redirect('/?page=media-templates&saved=1');
+});
+
+// --- Button Messages ---
+app.post('/button-message-add', (req, res) => {
+  const items = loadButtonMessages();
+  const buttons = [];
+  if (req.body.btn1Title && req.body.btn1Url) buttons.push({ title: req.body.btn1Title, url: normalizeUrl(req.body.btn1Url) });
+  if (req.body.btn2Title && req.body.btn2Url) buttons.push({ title: req.body.btn2Title, url: normalizeUrl(req.body.btn2Url) });
+  if (req.body.btn3Title && req.body.btn3Url) buttons.push({ title: req.body.btn3Title, url: normalizeUrl(req.body.btn3Url) });
+  items.push({ id: 'bm_' + Date.now(), text: req.body.text, buttons, active: true });
+  saveButtonMessages(items);
+  res.redirect('/?page=button-messages&saved=1');
+});
+app.get('/button-message-toggle', (req, res) => {
+  const items = loadButtonMessages();
+  const idx = parseInt(req.query.index);
+  if (items[idx]) { items[idx].active = items[idx].active === false ? true : false; saveButtonMessages(items); }
+  res.redirect('/?page=button-messages&saved=1');
+});
+app.get('/button-message-delete', (req, res) => {
+  const items = loadButtonMessages();
+  items.splice(parseInt(req.query.index), 1);
+  saveButtonMessages(items);
+  res.redirect('/?page=button-messages&saved=1');
+});
+
+// --- Carousel Sets ---
+app.post('/carousel-set-add', (req, res) => {
+  const sets = loadCarouselSets();
+  const cards = [];
+  for (let n = 1; n <= 10; n++) {
+    const title = (req.body[`card${n}Title`] || '').trim();
+    const photo = normalizeUrl(req.body[`card${n}Photo`] || '');
+    if (!title || !photo) continue;
+    cards.push({
+      title, subtitle: (req.body[`card${n}Subtitle`] || '').trim(),
+      photo, buttonText: req.body[`card${n}Button`] || 'Chat Now',
+      redirect: normalizeUrl(req.body[`card${n}Redirect`] || '')
+    });
+  }
+  if (cards.length < 2) return res.redirect('/?page=carousel-sets&error=Need+at+least+2+cards');
+  sets.push({ id: 'cs_' + Date.now(), name: req.body.name || 'Set ' + (sets.length + 1), cards, active: true });
+  saveCarouselSets(sets);
+  res.redirect('/?page=carousel-sets&saved=1');
+});
+app.get('/carousel-set-toggle', (req, res) => {
+  const sets = loadCarouselSets();
+  const idx = parseInt(req.query.index);
+  if (sets[idx]) { sets[idx].active = sets[idx].active === false ? true : false; saveCarouselSets(sets); }
+  res.redirect('/?page=carousel-sets&saved=1');
+});
+app.get('/carousel-set-delete', (req, res) => {
+  const sets = loadCarouselSets();
+  sets.splice(parseInt(req.query.index), 1);
+  saveCarouselSets(sets);
+  res.redirect('/?page=carousel-sets&saved=1');
+});
+
+// --- Quick Replies ---
+app.post('/quick-reply-add', (req, res) => {
+  const items = loadQuickReplyConfig();
+  items.push({ id: 'qr_' + Date.now(), label: req.body.label, replyFormat: req.body.replyFormat || 'card', payload: 'QR_' + Date.now(), active: true });
+  saveQuickReplyConfig(items);
+  res.redirect('/?page=quick-replies&saved=1');
+});
+app.get('/quick-reply-toggle', (req, res) => {
+  const items = loadQuickReplyConfig();
+  const idx = parseInt(req.query.index);
+  if (items[idx]) { items[idx].active = items[idx].active === false ? true : false; saveQuickReplyConfig(items); }
+  res.redirect('/?page=quick-replies&saved=1');
+});
+app.get('/quick-reply-delete', (req, res) => {
+  const items = loadQuickReplyConfig();
+  items.splice(parseInt(req.query.index), 1);
+  saveQuickReplyConfig(items);
+  res.redirect('/?page=quick-replies&saved=1');
+});
 // ============================================
 // CRON — per-page daily + NEW per-group schedules
+
+// ============================================
+// NEW FORMAT STORAGE HELPERS
+// ============================================
+function loadMediaTemplates() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.mediaTemplates) ? lib.mediaTemplates : [];
+}
+function saveMediaTemplates(items) {
+  const lib = loadLibrary();
+  lib.mediaTemplates = items;
+  saveLibrary(lib);
+}
+function loadButtonMessages() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.buttonMessages) ? lib.buttonMessages : [];
+}
+function saveButtonMessages(items) {
+  const lib = loadLibrary();
+  lib.buttonMessages = items;
+  saveLibrary(lib);
+}
+function loadCarouselSets() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.carouselSets) ? lib.carouselSets : [];
+}
+function saveCarouselSets(items) {
+  const lib = loadLibrary();
+  lib.carouselSets = items;
+  saveLibrary(lib);
+}
+function loadQuickReplyConfig() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.quickReplies) ? lib.quickReplies : [];
+}
+function saveQuickReplyConfig(items) {
+  const lib = loadLibrary();
+  lib.quickReplies = items;
+  saveLibrary(lib);
+}
+
+// Rotation tracker (per group)
+function getRotationIndex(groupName) {
+  const s = loadSettings();
+  s.rotationIndex = s.rotationIndex || {};
+  return s.rotationIndex[groupName] || 0;
+}
+function advanceRotation(groupName) {
+  const s = loadSettings();
+  s.rotationIndex = s.rotationIndex || {};
+  const modes = ['card', 'media', 'button-msg', 'carousel'].filter(m => {
+    // Only include modes that have content
+    if (m === 'media') return loadMediaTemplates().filter(t => t.active !== false).length > 0;
+    if (m === 'button-msg') return loadButtonMessages().filter(t => t.active !== false).length > 0;
+    if (m === 'carousel') return loadCarouselSets().filter(t => t.active !== false).length > 0;
+    return true;
+  });
+  if (!modes.length) return 'card';
+  const idx = (s.rotationIndex[groupName] || 0) % modes.length;
+  s.rotationIndex[groupName] = idx + 1;
+  saveSettings(s);
+  return modes[idx];
+}
+
+// Attachment ID cache (for media templates)
+function getCachedAttachmentId(pageId, imageUrl) {
+  const s = loadSettings();
+  const cache = s.attachmentCache || {};
+  return cache[`${pageId}:${imageUrl}`] || null;
+}
+function setCachedAttachmentId(pageId, imageUrl, attachmentId) {
+  const s = loadSettings();
+  s.attachmentCache = s.attachmentCache || {};
+  s.attachmentCache[`${pageId}:${imageUrl}`] = attachmentId;
+  saveSettings(s);
+}
+
+// ============================================
+// NEW SEND FUNCTIONS
+// ============================================
+async function uploadImageAttachment(page, imageUrl) {
+  const cached = getCachedAttachmentId(page.pageId, imageUrl);
+  if (cached) return cached;
+  try {
+    const r = await fetch(`https://graph.facebook.com/v17.0/me/message_attachments?access_token=${page.accessToken}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: { attachment: { type: 'image', payload: { url: imageUrl, is_reusable: true } } } })
+    });
+    const data = await r.json();
+    if (data.attachment_id) {
+      setCachedAttachmentId(page.pageId, imageUrl, data.attachment_id);
+      return data.attachment_id;
+    }
+    console.log(`[${page.label}] Attachment upload failed:`, data.error?.message || 'unknown');
+    return null;
+  } catch (e) {
+    console.error(`[${page.label}] Attachment upload error:`, e.message);
+    return null;
+  }
+}
+
+async function sendMediaTemplateMsg(page, psid, opts = {}) {
+  const items = loadMediaTemplates().filter(t => t.active !== false);
+  if (!items.length) return sendCard(page, psid, opts);
+  const item = pickRandom(items);
+  const attachmentId = await uploadImageAttachment(page, item.photo);
+  if (!attachmentId) return sendCard(page, psid, opts);
+  const rawDest = normalizeUrl(item.buttonUrl || page.whatsapp || '');
+  const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
+  return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: psid },
+      message: { attachment: { type: 'template', payload: {
+        template_type: 'media',
+        elements: [{ media_type: 'image', attachment_id: attachmentId,
+          buttons: [{ type: 'web_url', url: trackUrl, title: item.buttonText || 'See Photos' }]
+        }]
+      }}}
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { trackMessage(page.pageId, false); console.log(`[${page.label}] Media template failed:`, data.error.message); }
+    else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    return data;
+  }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+}
+
+function sendButtonTemplateMsg(page, psid, opts = {}) {
+  const items = loadButtonMessages().filter(t => t.active !== false);
+  if (!items.length) return sendCard(page, psid, opts);
+  const item = pickRandom(items);
+  const buttons = (item.buttons || []).slice(0, 3).map(b => {
+    const rawDest = normalizeUrl(b.url || page.whatsapp || '');
+    const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
+    return { type: 'web_url', url: trackUrl, title: b.title || 'Click' };
+  });
+  if (!buttons.length) return sendCard(page, psid, opts);
+  return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: psid },
+      message: { attachment: { type: 'template', payload: {
+        template_type: 'button', text: item.text || 'Hey!',
+        buttons
+      }}}
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { trackMessage(page.pageId, false); }
+    else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    return data;
+  }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+}
+
+function sendCarouselMsg(page, psid, opts = {}) {
+  const sets = loadCarouselSets().filter(t => t.active !== false);
+  if (!sets.length) return sendCard(page, psid, opts);
+  const set = pickRandom(sets);
+  const elements = (set.cards || []).map(card => {
+    const rawDest = normalizeUrl(card.redirect || page.whatsapp || '');
+    const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
+    return {
+      title: card.title || 'Chat', subtitle: card.subtitle || '',
+      image_url: card.photo || '', 
+      default_action: { type: 'web_url', url: trackUrl, webview_height_ratio: 'tall' },
+      buttons: [{ type: 'web_url', url: trackUrl, title: card.buttonText || 'Chat' }]
+    };
+  });
+  if (!elements.length) return sendCard(page, psid, opts);
+  return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: psid },
+      message: { attachment: { type: 'template', payload: {
+        template_type: 'generic', image_aspect_ratio: 'square',
+        elements
+      }}}
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { trackMessage(page.pageId, false); }
+    else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    return data;
+  }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+}
+
+function sendWithQuickReplies(page, psid, opts = {}) {
+  const qrs = loadQuickReplyConfig().filter(q => q.active !== false);
+  if (!qrs.length) return sendCard(page, psid, opts);
+  const quick_replies = qrs.slice(0, 13).map(q => ({
+    content_type: 'text', title: q.label || 'Click', payload: q.payload || 'QR_' + q.id
+  }));
+  // Send a card with quick replies attached
+  const rawDest = normalizeUrl(opts.redirect || page.whatsapp || '');
+  const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
+  const photo = opts.photo || getCurrentPhoto(page);
+  return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: psid },
+      message: {
+        attachment: { type: 'template', payload: {
+          template_type: 'generic', image_aspect_ratio: 'square',
+          elements: [{ title: page.title, subtitle: page.subtitle, image_url: photo,
+            default_action: { type: 'web_url', url: trackUrl, webview_height_ratio: 'tall' },
+            buttons: [{ type: 'web_url', url: trackUrl, title: page.buttonText }]
+          }]
+        }},
+        quick_replies
+      }
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { trackMessage(page.pageId, false); }
+    else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    return data;
+  }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+}
+
+// ============================================
+// RENDER: Media Templates Page
+// ============================================
+function renderMediaTemplatesPage(req) {
+  const items = loadMediaTemplates();
+  const lib = loadLibrary();
+  const cards = items.map((t, i) => {
+    const isActive = t.active !== false;
+    return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #f97316;border-radius:8px;overflow:hidden;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="width:100%;aspect-ratio:3/4;background:#f1f5f9;position:relative;">
+        <img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/>
+        ${isActive ? '' : '<span style="position:absolute;top:6px;right:6px;background:#64748b;color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;">PAUSED</span>'}
+      </div>
+      <div style="padding:10px;">
+        <div style="font-size:12px;color:#f97316;font-weight:600;">🔘 ${esc(t.buttonText || 'See Photos')}</div>
+        <div style="font-size:11px;color:#94a3b8;font-family:monospace;margin-top:4px;word-break:break-all;">🔗 ${esc((t.buttonUrl || '').replace(/^https?:\/\//, ''))}</div>
+        <div style="display:flex;gap:6px;margin-top:8px;">
+          <a href="/media-template-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};flex:1;text-align:center;">${isActive ? '⏸' : '▶'}</a>
+          <a href="/media-template-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">🗑️</a>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>📷 Media Templates</h2>
+      <p style="color:#6b7280;font-size:13px;">Full-width photo + button. No title/subtitle. Looks like someone sent a personal photo.</p>
+      <div style="font-size:13px;color:#f97316;font-weight:600;margin-top:8px;">${items.length} media templates · ${items.filter(t=>t.active!==false).length} active</div>
+    </div>
+    <div class="card" style="border:2px solid #fed7aa;">
+      <h2>➕ Add Media Template</h2>
+      <form action="/media-template-add" method="POST">
+        <label>Photo URL</label>
+        <input name="photo" placeholder="https://i.imgur.com/xxxxx.png" required/>
+        <div class="row" style="margin-top:8px;">
+          <div><label>Button Text</label><input name="buttonText" placeholder="See My Photos 📸" value="See My Photos 📸"/></div>
+          <div><label>Button URL (redirect)</label><input name="buttonUrl" placeholder="https://scrollgallery.com/?p=..." required/></div>
+        </div>
+        <button type="submit" class="btn btn-green" style="margin-top:12px;">➕ Add Media Template</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>📋 Existing Media Templates (${items.length})</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;">
+        ${cards || '<span style="color:#94a3b8;">None yet.</span>'}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ============================================
+// RENDER: Button Messages Page
+// ============================================
+function renderButtonMessagesPage(req) {
+  const items = loadButtonMessages();
+  const cards = items.map((t, i) => {
+    const isActive = t.active !== false;
+    const btns = t.buttons || [];
+    return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #ec4899;border-radius:8px;padding:14px;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="font-size:14px;color:#1a1d2e;margin-bottom:8px;white-space:pre-wrap;">${esc(t.text)}</div>
+      ${btns.map(b => `<div style="border-top:1px solid #f1f5f9;padding:6px 0;text-align:center;">
+        <span style="color:#3b82f6;font-size:13px;font-weight:500;">${esc(b.title)}</span>
+        <span style="font-size:10px;color:#94a3b8;display:block;font-family:monospace;">→ ${esc((b.url||'').replace(/^https?:\/\//, ''))}</span>
+      </div>`).join('')}
+      <div style="display:flex;gap:6px;margin-top:10px;">
+        <a href="/button-message-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};flex:1;text-align:center;">${isActive ? '⏸' : '▶'}</a>
+        <a href="/button-message-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">🗑️</a>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>💬 Button Messages</h2>
+      <p style="color:#6b7280;font-size:13px;">Text message + up to 3 clickable buttons. No image. Conversational feel.</p>
+      <div style="font-size:13px;color:#ec4899;font-weight:600;margin-top:8px;">${items.length} button messages · ${items.filter(t=>t.active!==false).length} active</div>
+    </div>
+    <div class="card" style="border:2px solid #fbcfe8;">
+      <h2>➕ Add Button Message</h2>
+      <form action="/button-message-add" method="POST">
+        <label>Message Text</label>
+        <textarea name="text" placeholder="Hey, I just uploaded new photos... want to see them? 😊" required></textarea>
+        <div style="margin-top:12px;background:#fdf2f8;border:1px solid #fbcfe8;border-radius:8px;padding:12px;">
+          <div style="font-size:13px;font-weight:600;color:#be185d;margin-bottom:8px;">Buttons (up to 3)</div>
+          <div class="row"><div><label>Button 1 Title</label><input name="btn1Title" placeholder="See My Photos 📸" required/></div><div><label>Button 1 URL</label><input name="btn1Url" placeholder="https://scrollgallery.com/?p=..." required/></div></div>
+          <div class="row" style="margin-top:6px;"><div><label>Button 2 Title (optional)</label><input name="btn2Title" placeholder="WhatsApp 💬"/></div><div><label>Button 2 URL</label><input name="btn2Url" placeholder="https://wa.me/..."/></div></div>
+          <div class="row" style="margin-top:6px;"><div><label>Button 3 Title (optional)</label><input name="btn3Title" placeholder="Video Call 📹"/></div><div><label>Button 3 URL</label><input name="btn3Url" placeholder=""/></div></div>
+        </div>
+        <button type="submit" class="btn btn-green" style="margin-top:12px;">➕ Add Button Message</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>📋 Existing Button Messages (${items.length})</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;">
+        ${cards || '<span style="color:#94a3b8;">None yet.</span>'}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ============================================
+// RENDER: Carousel Sets Page
+// ============================================
+function renderCarouselSetsPage(req) {
+  const sets = loadCarouselSets();
+  const lib = loadLibrary();
+  const setCards = sets.map((s, si) => {
+    const isActive = s.active !== false;
+    const cardsHtml = (s.cards || []).map((c, ci) => `
+      <div style="min-width:120px;background:#f7f8fc;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;flex-shrink:0;">
+        <div style="aspect-ratio:1/1;background:#e2e8f0;"><img src="${esc(c.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/></div>
+        <div style="padding:6px;font-size:11px;">
+          <div style="font-weight:600;color:#1a1d2e;">${esc(c.title)}</div>
+          <div style="color:#94a3b8;">${esc(c.subtitle || '')}</div>
+          <div style="color:#3b82f6;margin-top:2px;">${esc(c.buttonText || 'Chat')}</div>
+        </div>
+      </div>
+    `).join('');
+    return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #8b5cf6;border-radius:8px;padding:14px;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <div style="font-weight:600;font-size:15px;color:#1a1d2e;">${esc(s.name || 'Set ' + (si+1))}</div>
+        <div style="display:flex;gap:6px;">
+          <a href="/carousel-set-toggle?index=${si}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? '⏸' : '▶'}</a>
+          <a href="/carousel-set-delete?index=${si}" onclick="return confirm('Delete this carousel set?')" class="qbtn" style="background:#dc2626;">🗑️</a>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;">${cardsHtml || '<span style="color:#94a3b8;font-size:12px;">No cards.</span>'}</div>
+      <div style="font-size:11px;color:#8b5cf6;margin-top:6px;">${(s.cards||[]).length} cards in set</div>
+    </div>`;
+  }).join('');
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>🎠 Carousel Sets</h2>
+      <p style="color:#6b7280;font-size:13px;">Swipeable cards side by side. Fan picks who to chat with. Each set is sent as one message.</p>
+      <div style="font-size:13px;color:#8b5cf6;font-weight:600;margin-top:8px;">${sets.length} carousel sets · ${sets.filter(t=>t.active!==false).length} active</div>
+    </div>
+    <div class="card" style="border:2px solid #ddd6fe;">
+      <h2>➕ Create Carousel Set</h2>
+      <form action="/carousel-set-add" method="POST">
+        <label>Set Name</label>
+        <input name="name" placeholder='e.g. "Hot Girls Set 1"' required/>
+        <div style="margin-top:12px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px;">
+          <div style="font-size:13px;font-weight:600;color:#6b21a8;margin-bottom:8px;">Cards in this carousel (2-10)</div>
+          ${[1,2,3].map(n => `
+          <div style="border:1px solid #e9d5ff;border-radius:8px;padding:10px;margin-bottom:8px;background:#fff;">
+            <div style="font-size:12px;font-weight:600;color:#8b5cf6;margin-bottom:6px;">Card ${n} ${n > 2 ? '(optional)' : ''}</div>
+            <div class="row"><div><label>Name</label><input name="card${n}Title" placeholder="Jessica 35" ${n <= 2 ? 'required' : ''}/></div><div><label>Subtitle</label><input name="card${n}Subtitle" placeholder="Message me"/></div></div>
+            <div class="row" style="margin-top:4px;"><div><label>Photo URL</label><input name="card${n}Photo" placeholder="https://i.imgur.com/..." ${n <= 2 ? 'required' : ''}/></div><div><label>Button Text</label><input name="card${n}Button" placeholder="Chat Now" value="Chat Now"/></div></div>
+            <label style="margin-top:4px;">Redirect URL</label><input name="card${n}Redirect" placeholder="https://scrollgallery.com/?p=..." ${n <= 2 ? 'required' : ''}/>
+          </div>`).join('')}
+        </div>
+        <button type="submit" class="btn btn-green" style="margin-top:8px;">➕ Create Carousel Set</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>📋 Existing Carousel Sets (${sets.length})</h2>
+      <div style="display:grid;gap:12px;">${setCards || '<span style="color:#94a3b8;">None yet.</span>'}</div>
+    </div>
+  </div>`;
+}
+
+// ============================================
+// RENDER: Quick Replies Page
+// ============================================
+function renderQuickRepliesPage(req) {
+  const items = loadQuickReplyConfig();
+  const chips = items.map((q, i) => {
+    const isActive = q.active !== false;
+    return `<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="background:#06b6d4;color:#fff;font-size:13px;font-weight:500;padding:5px 14px;border-radius:20px;">${esc(q.label)}</div>
+      <div style="flex:1;font-size:11px;color:#6b7280;">replies with: <strong>${esc(q.replyFormat || 'card')}</strong></div>
+      <a href="/quick-reply-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? '⏸' : '▶'}</a>
+      <a href="/quick-reply-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">×</a>
+    </div>`;
+  }).join('');
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>💊 Quick Replies</h2>
+      <p style="color:#6b7280;font-size:13px;">Tappable pills below messages. Fan taps one → resets 24h window → bot auto-replies. Pills disappear after tap.</p>
+      <div style="font-size:13px;color:#06b6d4;font-weight:600;margin-top:8px;">${items.length} quick replies · ${items.filter(t=>t.active!==false).length} active</div>
+    </div>
+    <div class="card" style="border:2px solid #a5f3fc;">
+      <h2>➕ Add Quick Reply</h2>
+      <form action="/quick-reply-add" method="POST">
+        <div class="row">
+          <div><label>Pill Label (what fan sees)</label><input name="label" placeholder="💬 Chat" required/></div>
+          <div><label>Auto-reply format</label>
+            <select name="replyFormat">
+              <option value="card">📷 Card</option>
+              <option value="media">📷 Media Template</option>
+              <option value="text">💬 Text</option>
+              <option value="button-msg">💬 Button Message</option>
+            </select>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-green" style="margin-top:12px;">➕ Add Quick Reply</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>📋 Active Quick Replies (${items.length})</h2>
+      <div style="display:grid;gap:8px;">${chips || '<span style="color:#94a3b8;">None yet.</span>'}</div>
+      <div class="helper" style="margin-top:12px;">Quick replies attach to whatever send mode your group uses. When a fan taps one, the bot sends an auto-reply in the format you pick above.</div>
+    </div>
+  </div>`;
+}
+
+// ============================================
+// ROUTES: New Format Pages
+// ============================================
+
+// Main route additions for new pages
+// (These are handled in the main app.get('/') route via sel check)
+
+// --- Media Templates ---
+app.post('/media-template-add', (req, res) => {
+  const items = loadMediaTemplates();
+  items.push({ photo: normalizeUrl(req.body.photo), buttonText: req.body.buttonText || 'See My Photos', buttonUrl: normalizeUrl(req.body.buttonUrl), active: true });
+  saveMediaTemplates(items);
+  res.redirect('/?page=media-templates&saved=1');
+});
+app.get('/media-template-toggle', (req, res) => {
+  const items = loadMediaTemplates();
+  const idx = parseInt(req.query.index);
+  if (items[idx]) { items[idx].active = items[idx].active === false ? true : false; saveMediaTemplates(items); }
+  res.redirect('/?page=media-templates&saved=1');
+});
+app.get('/media-template-delete', (req, res) => {
+  const items = loadMediaTemplates();
+  items.splice(parseInt(req.query.index), 1);
+  saveMediaTemplates(items);
+  res.redirect('/?page=media-templates&saved=1');
+});
+
+// --- Button Messages ---
+app.post('/button-message-add', (req, res) => {
+  const items = loadButtonMessages();
+  const buttons = [];
+  if (req.body.btn1Title && req.body.btn1Url) buttons.push({ title: req.body.btn1Title, url: normalizeUrl(req.body.btn1Url) });
+  if (req.body.btn2Title && req.body.btn2Url) buttons.push({ title: req.body.btn2Title, url: normalizeUrl(req.body.btn2Url) });
+  if (req.body.btn3Title && req.body.btn3Url) buttons.push({ title: req.body.btn3Title, url: normalizeUrl(req.body.btn3Url) });
+  items.push({ id: 'bm_' + Date.now(), text: req.body.text, buttons, active: true });
+  saveButtonMessages(items);
+  res.redirect('/?page=button-messages&saved=1');
+});
+app.get('/button-message-toggle', (req, res) => {
+  const items = loadButtonMessages();
+  const idx = parseInt(req.query.index);
+  if (items[idx]) { items[idx].active = items[idx].active === false ? true : false; saveButtonMessages(items); }
+  res.redirect('/?page=button-messages&saved=1');
+});
+app.get('/button-message-delete', (req, res) => {
+  const items = loadButtonMessages();
+  items.splice(parseInt(req.query.index), 1);
+  saveButtonMessages(items);
+  res.redirect('/?page=button-messages&saved=1');
+});
+
+// --- Carousel Sets ---
+app.post('/carousel-set-add', (req, res) => {
+  const sets = loadCarouselSets();
+  const cards = [];
+  for (let n = 1; n <= 10; n++) {
+    const title = (req.body[`card${n}Title`] || '').trim();
+    const photo = normalizeUrl(req.body[`card${n}Photo`] || '');
+    if (!title || !photo) continue;
+    cards.push({
+      title, subtitle: (req.body[`card${n}Subtitle`] || '').trim(),
+      photo, buttonText: req.body[`card${n}Button`] || 'Chat Now',
+      redirect: normalizeUrl(req.body[`card${n}Redirect`] || '')
+    });
+  }
+  if (cards.length < 2) return res.redirect('/?page=carousel-sets&error=Need+at+least+2+cards');
+  sets.push({ id: 'cs_' + Date.now(), name: req.body.name || 'Set ' + (sets.length + 1), cards, active: true });
+  saveCarouselSets(sets);
+  res.redirect('/?page=carousel-sets&saved=1');
+});
+app.get('/carousel-set-toggle', (req, res) => {
+  const sets = loadCarouselSets();
+  const idx = parseInt(req.query.index);
+  if (sets[idx]) { sets[idx].active = sets[idx].active === false ? true : false; saveCarouselSets(sets); }
+  res.redirect('/?page=carousel-sets&saved=1');
+});
+app.get('/carousel-set-delete', (req, res) => {
+  const sets = loadCarouselSets();
+  sets.splice(parseInt(req.query.index), 1);
+  saveCarouselSets(sets);
+  res.redirect('/?page=carousel-sets&saved=1');
+});
+
+// --- Quick Replies ---
+app.post('/quick-reply-add', (req, res) => {
+  const items = loadQuickReplyConfig();
+  items.push({ id: 'qr_' + Date.now(), label: req.body.label, replyFormat: req.body.replyFormat || 'card', payload: 'QR_' + Date.now(), active: true });
+  saveQuickReplyConfig(items);
+  res.redirect('/?page=quick-replies&saved=1');
+});
+app.get('/quick-reply-toggle', (req, res) => {
+  const items = loadQuickReplyConfig();
+  const idx = parseInt(req.query.index);
+  if (items[idx]) { items[idx].active = items[idx].active === false ? true : false; saveQuickReplyConfig(items); }
+  res.redirect('/?page=quick-replies&saved=1');
+});
+app.get('/quick-reply-delete', (req, res) => {
+  const items = loadQuickReplyConfig();
+  items.splice(parseInt(req.query.index), 1);
+  saveQuickReplyConfig(items);
+  res.redirect('/?page=quick-replies&saved=1');
+});
 // ============================================
 cron.schedule('* * * * *', () => {
   const now = new Date();
