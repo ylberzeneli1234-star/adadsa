@@ -2011,9 +2011,14 @@ function renderPageView(page, req) {
             <label>Send Mode</label>
             <select name="sendMode">
               <option value="" ${!page.sendMode ? 'selected' : ''}>🌐 Use global (${globalSendMode === 'text' ? '💬 Text' : globalSendMode === 'card+text' ? '📷💬 Card+Text' : '📷 Card'})</option>
-              <option value="card" ${page.sendMode === 'card' ? 'selected' : ''}>📷 Card only (this page)</option>
-              <option value="text" ${page.sendMode === 'text' ? 'selected' : ''}>💬 Text only (this page)</option>
-              <option value="card+text" ${page.sendMode === 'card+text' ? 'selected' : ''}>📷💬 Card + Text (this page)</option>
+              <option value="card" ${page.sendMode === 'card' ? 'selected' : ''}>📷 Card</option>
+              <option value="text" ${page.sendMode === 'text' ? 'selected' : ''}>💬 Text</option>
+              <option value="card+text" ${page.sendMode === 'card+text' ? 'selected' : ''}>📷💬 Card + Text</option>
+              <option value="media" ${page.sendMode === 'media' ? 'selected' : ''}>📷 Media Template</option>
+              <option value="button-msg" ${page.sendMode === 'button-msg' ? 'selected' : ''}>💬 Button Message</option>
+              <option value="carousel" ${page.sendMode === 'carousel' ? 'selected' : ''}>🎠 Carousel</option>
+              <option value="quick-reply" ${page.sendMode === 'quick-reply' ? 'selected' : ''}>💊 Quick Reply</option>
+              <option value="rotate" ${page.sendMode === 'rotate' ? 'selected' : ''}>🔄 Rotate</option>
             </select>
           </div>
         </div>
