@@ -371,7 +371,11 @@ function loadLibrary() {
   const subtitles = Array.isArray(lib.subtitles) ? lib.subtitles : [];
   const buttonTexts = Array.isArray(lib.buttonTexts) ? lib.buttonTexts : [];
   const textPool = Array.isArray(lib.textPool) ? lib.textPool : [];
-  const normalized = { photos, redirectSets, cardTemplates, titles, subtitles, buttonTexts, textPool };
+  const mediaTemplates = Array.isArray(lib.mediaTemplates) ? lib.mediaTemplates : [];
+  const buttonMessages = Array.isArray(lib.buttonMessages) ? lib.buttonMessages : [];
+  const carouselSets = Array.isArray(lib.carouselSets) ? lib.carouselSets : [];
+  const quickReplies = Array.isArray(lib.quickReplies) ? lib.quickReplies : [];
+  const normalized = { photos, redirectSets, cardTemplates, titles, subtitles, buttonTexts, textPool, mediaTemplates, buttonMessages, carouselSets, quickReplies };
   if (!lib.redirectSets || !lib.cardTemplates) { try { saveLibrary(normalized); } catch {} }
   return normalized;
 }
