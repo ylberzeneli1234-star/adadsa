@@ -1074,7 +1074,7 @@ function renderTopbar(pages, selectedPageId) {
         ${opts}
       </select>
     </form>
-    <div class="meta">Uptime: ${uptimeText()} · Pages: ${pages.length}</div>
+    <div class="meta">🕐 ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })} · Uptime: ${uptimeText()} · Pages: ${pages.length}</div>
   </div>`;
 }
 
@@ -1868,6 +1868,8 @@ function renderPageView(page, req) {
   const todayFailed = dailyStats[0]?.failed || 0;
   const mode = pageContentMode(page);
   const pSendMode = pageSendMode(page);
+  const globalMode = getGlobalContentMode();
+  const globalSendMode = getGlobalSendMode();
   const groups = getAllGroups();
   const bp = broadcastProgress[page.pageId];
 
