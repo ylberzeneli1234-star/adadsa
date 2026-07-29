@@ -214,7 +214,7 @@ function getGlobalSendMode() {
   if (s.sendMode === 'text' || s.sendMode === 'card+text') return s.sendMode;
   return 'card';
 }
-const ALL_SEND_MODES = ['card', 'text', 'card+text', 'media', 'button-msg', 'carousel', 'quick-reply', 'raw-photo', 'rotate'];
+const ALL_SEND_MODES = ['card', 'text', 'card+text', 'media', 'button-msg', 'carousel', 'quick-reply', 'raw-photo', 'teaser', 'rotate'];
 function pageSendMode(page) {
   // Group overrides page overrides global
   if (page && page.group) {
@@ -375,7 +375,8 @@ function loadLibrary() {
   const carouselSets = Array.isArray(lib.carouselSets) ? lib.carouselSets : [];
   const quickReplies = Array.isArray(lib.quickReplies) ? lib.quickReplies : [];
   const rawPhotoSets = Array.isArray(lib.rawPhotoSets) ? lib.rawPhotoSets : [];
-  const normalized = { photos, redirectSets, cardTemplates, titles, subtitles, buttonTexts, textPool, mediaTemplates, buttonMessages, carouselSets, quickReplies, rawPhotoSets };
+  const teaserCards = Array.isArray(lib.teaserCards) ? lib.teaserCards : [];
+  const normalized = { photos, redirectSets, cardTemplates, titles, subtitles, buttonTexts, textPool, mediaTemplates, buttonMessages, carouselSets, quickReplies, rawPhotoSets, teaserCards };
   if (!lib.redirectSets || !lib.cardTemplates) { try { saveLibrary(normalized); } catch {} }
   return normalized;
 }
@@ -853,6 +854,8 @@ function broadcastToPage(page, opts = {}) {
           result = await sendWithQuickReplies(page, psid, opts);
         } else if (effectiveSendMode === 'raw-photo') {
           result = await sendRawPhotoCombo(page, psid, opts);
+        } else if (effectiveSendMode === 'teaser') {
+          result = await sendTeaserCard(page, psid, opts);
         } else {
           result = await sendCard(page, psid, opts);
         }
@@ -955,7 +958,7 @@ app.post('/webhook', (req, res) => {
       console.warn(`Webhook received for unknown page ${pageId}`);
       return;
     }
-    (entry.messaging || []).forEach(event => {
+    (entry.messaging || []).forEach(async (event) => {
       const psid = event.sender?.id;
       if (!psid) return;
       if (event.read) { trackRead(pageId, psid, event.read.watermark); return; }
@@ -964,6 +967,31 @@ app.post('/webhook', (req, res) => {
       saveFan(pageId, psid);
       if (event.postback?.payload === 'GET_STARTED') {
         sendCard(page, psid);
+      } else if (event.postback?.payload && event.postback.payload.startsWith('TEASER_')) {
+        // Fan tapped a teaser button — send the payoff
+        const parts = event.postback.payload.split('_');
+        const teaserId = parts[1];
+        const btnIdx = parseInt(parts[2]) || 0;
+        const teasers = loadTeaserCards();
+        const teaser = teasers.find(t => t.id === teaserId);
+        if (teaser && teaser.buttons && teaser.buttons[btnIdx]) {
+          const btn = teaser.buttons[btnIdx];
+          const setName = pageSet(page);
+          const redirectUrl = normalizeUrl((btn.redirectUrls && btn.redirectUrls[setName]) || btn.redirectUrl || page.whatsapp || '');
+          const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (redirectUrl ? `&d=${encodeURIComponent(redirectUrl)}` : '');
+          if (btn.payoffType === 'media' && btn.payoffMedia) {
+            const attachmentId = await uploadMediaAttachment(page, btn.payoffMedia, btn.payoffMediaType || 'image');
+            if (attachmentId) {
+              const fbMediaType = (btn.payoffMediaType === 'video') ? 'video' : 'image';
+              fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ recipient: { id: psid }, message: { attachment: { type: 'template', payload: { template_type: 'media', elements: [{ media_type: fbMediaType, attachment_id: attachmentId, buttons: [{ type: 'web_url', url: trackUrl, title: btn.payoffButtonText || 'Open' }] }] } } } })
+              }).then(r => r.json()).then(d => { if (!d.error) trackMessage(page.pageId, true); });
+            } else { sendCard(page, psid, { redirect: redirectUrl }); }
+          } else {
+            sendCard(page, psid, { redirect: redirectUrl });
+          }
+        }
       } else if (event.message?.quick_reply?.payload) {
         // Fan tapped a quick reply — send auto-reply
         const qrs = loadQuickReplyConfig();
@@ -1105,6 +1133,7 @@ function renderTopbar(pages, selectedPageId) {
         <option value="carousel-sets" ${selectedPageId === 'carousel-sets' ? 'selected' : ''}>🎠 Carousel Sets</option>
         <option value="quick-replies" ${selectedPageId === 'quick-replies' ? 'selected' : ''}>💊 Quick Replies</option>
         <option value="raw-photos" ${selectedPageId === 'raw-photos' ? 'selected' : ''}>📸 Raw Photo Sets</option>
+        <option value="teaser-cards" ${selectedPageId === 'teaser-cards' ? 'selected' : ''}>🎭 Teaser Cards</option>
         ${opts}
       </select>
     </form>
@@ -1179,8 +1208,8 @@ function renderGroupControlPanel(pages) {
   if (!groups.length) return '';
 
   const schedules = loadGroupSchedules();
-  const sendModeOptions = ['global', 'card', 'text', 'card+text', 'media', 'button-msg', 'carousel', 'quick-reply', 'raw-photo', 'rotate'];
-  const sendModeLabels = { 'global': '🌐 Global', 'card': '📷 Card', 'text': '💬 Text', 'card+text': '📷💬 Card+Text', 'media': '📷 Media', 'button-msg': '💬 Button Msg', 'carousel': '🎠 Carousel', 'quick-reply': '💊 Quick Reply', 'raw-photo': '📸 Raw Photo', 'rotate': '🔄 Rotate' };
+  const sendModeOptions = ['global', 'card', 'text', 'card+text', 'media', 'button-msg', 'carousel', 'quick-reply', 'raw-photo', 'teaser', 'rotate'];
+  const sendModeLabels = { 'global': '🌐 Global', 'card': '📷 Card', 'text': '💬 Text', 'card+text': '📷💬 Card+Text', 'media': '📷 Media', 'button-msg': '💬 Button Msg', 'carousel': '🎠 Carousel', 'quick-reply': '💊 Quick Reply', 'raw-photo': '📸 Raw Photo', 'teaser': '🎭 Teaser', 'rotate': '🔄 Rotate' };
   const contentModeOptions = ['global', 'classic', 'templates'];
   const contentModeLabels = { 'global': '🌐 Global', 'classic': '📷 Classic', 'templates': '🎴 Templates' };
 
@@ -2068,6 +2097,7 @@ function renderPageView(page, req) {
                   <option value="carousel" ${page.sendMode === 'carousel' ? 'selected' : ''}>🎠 Carousel</option>
                   <option value="quick-reply" ${page.sendMode === 'quick-reply' ? 'selected' : ''}>💊 Quick Reply</option>
                   <option value="raw-photo" ${page.sendMode === 'raw-photo' ? 'selected' : ''}>📸 Raw Photo</option>
+                  <option value="teaser" ${page.sendMode === 'teaser' ? 'selected' : ''}>🎭 Teaser</option>
                   <option value="rotate" ${page.sendMode === 'rotate' ? 'selected' : ''}>🔄 Rotate</option>
                 </select>
               </div>
@@ -2137,6 +2167,9 @@ app.get('/', (req, res) => {
   }
   if (sel === 'raw-photos') {
     return res.send(renderHead('Raw Photo Sets') + renderTopbar(pages, 'raw-photos') + renderRawPhotosPage(req) + '</body></html>');
+  }
+  if (sel === 'teaser-cards') {
+    return res.send(renderHead('Teaser Cards') + renderTopbar(pages, 'teaser-cards') + renderTeaserCardsPage(req) + '</body></html>');
   }
   if (sel !== 'all') {
     const page = pages.find(p => p.pageId === sel);
@@ -2924,12 +2957,13 @@ function getRotationIndex(groupName) {
 function advanceRotation(groupName) {
   const s = loadSettings();
   s.rotationIndex = s.rotationIndex || {};
-  const modes = ['card', 'media', 'button-msg', 'carousel', 'raw-photo'].filter(m => {
+  const modes = ['card', 'media', 'button-msg', 'carousel', 'raw-photo', 'teaser'].filter(m => {
     // Only include modes that have content
     if (m === 'media') return loadMediaTemplates().filter(t => t.active !== false).length > 0;
     if (m === 'button-msg') return loadButtonMessages().filter(t => t.active !== false).length > 0;
     if (m === 'carousel') return loadCarouselSets().filter(t => t.active !== false).length > 0;
     if (m === 'raw-photo') return loadRawPhotoSets().filter(t => t.active !== false).length > 0;
+    if (m === 'teaser') return loadTeaserCards().filter(t => t.active !== false).length > 0;
     return true;
   });
   if (!modes.length) return 'card';
@@ -3726,6 +3760,175 @@ app.get('/raw-photo-delete', (req, res) => {
   items.splice(parseInt(req.query.index), 1);
   saveRawPhotoSets(items);
   res.redirect('/?page=raw-photos&saved=1');
+});
+
+// ============================================
+// TEASER CARDS — storage, send, render, routes
+// ============================================
+function loadTeaserCards() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.teaserCards) ? lib.teaserCards : [];
+}
+function saveTeaserCards(items) {
+  const lib = loadLibrary();
+  lib.teaserCards = items;
+  saveLibrary(lib);
+}
+
+function sendTeaserCard(page, psid, opts = {}) {
+  const items = loadTeaserCards().filter(t => t.active !== false);
+  if (!items.length) return sendCard(page, psid, opts);
+  const item = pickRandom(items);
+  const buttons = (item.buttons || []).slice(0, 3).map((b, i) => ({
+    type: 'postback', title: b.label || 'Click', payload: 'TEASER_' + item.id + '_' + i
+  }));
+  if (!buttons.length) return sendCard(page, psid, opts);
+  return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: psid },
+      message: { attachment: { type: 'template', payload: {
+        template_type: 'generic', image_aspect_ratio: 'horizontal',
+        elements: [{
+          title: item.title || 'Hey!', subtitle: item.subtitle || '',
+          image_url: item.photo || '',
+          buttons
+        }]
+      }}}
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { trackMessage(page.pageId, false); }
+    else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    return data;
+  }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+}
+
+function renderTeaserCardsPage(req) {
+  const items = loadTeaserCards();
+  const setNames = getSetNames();
+  const cards = items.map((t, i) => {
+    const isActive = t.active !== false;
+    const btns = (t.buttons || []).map(b => '<span style="background:#e2e8f0;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;color:#475569;">' + esc(b.label) + '</span>').join(' ');
+    return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #e11d48;border-radius:8px;overflow:hidden;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="width:100%;aspect-ratio:1.91/1;background:#f1f5f9;overflow:hidden;"><img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/></div>
+      <div style="padding:10px;">
+        <div style="font-weight:600;font-size:13px;color:#1a1d2e;">${esc(t.title)}</div>
+        <div style="font-size:11px;color:#6b7280;">${esc(t.subtitle || '')}</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;">${btns}</div>
+        <div style="display:flex;gap:4px;margin-top:8px;">
+          <button type="button" class="qbtn" style="background:#6366f1;flex:1;" onclick="editTC(${i})">edit</button>
+          <a href="/teaser-card-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? 'pause' : 'on'}</a>
+          <a href="/teaser-card-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">del</a>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const activeItem = items.find(t => t.active !== false);
+  const messengerPreview = activeItem ? `
+    <div class="card" style="border:2px solid #fecdd3;background:#fff1f2;">
+      <h2 style="font-size:14px;color:#e11d48;">Messenger Preview</h2>
+      ${items.length > 1 ? `<select id="tc-preview-sel" onchange="updateTCPreview(this.value)" style="padding:6px 10px;border:1px solid #fecdd3;border-radius:6px;font-size:12px;width:100%;margin-bottom:10px;">${items.map((t,idx) => '<option value="' + idx + '"' + (t===activeItem?' selected':'') + '>#' + (idx+1) + ' — ' + esc(t.title || '') + '</option>').join('')}</select>` : ''}
+      <div id="tc-preview-frame" style="max-width:320px;margin:0 auto;">
+        <div style="background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);">
+          <div style="aspect-ratio:1.91/1;overflow:hidden;"><img src="${esc(activeItem.photo)}" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.style.display='none';"/></div>
+          <div style="padding:10px 14px;">
+            <div style="font-weight:600;font-size:15px;color:#1a1d2e;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">${esc(activeItem.title)}</div>
+            <div style="font-size:13px;color:#6b7280;margin-top:2px;">${esc(activeItem.subtitle || '')}</div>
+          </div>
+          ${(activeItem.buttons || []).map(b => '<div style="border-top:1px solid #e5e7eb;padding:11px 0;text-align:center;"><span style="color:#1a1d2e;font-size:14px;font-weight:600;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(b.label) + '</span></div>').join('')}
+        </div>
+        <div style="text-align:center;font-size:10px;color:#94a3b8;margin-top:6px;">Fan taps a button → bot sends the payoff (video/card/media)</div>
+      </div>
+    </div>` : '';
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>Teaser Cards</h2>
+      <p style="color:#6b7280;font-size:13px;">Horizontal card with postback buttons. Fan taps → bot sends the payoff. Two taps to redirect = higher engagement + 24h window reset.</p>
+      <div style="font-size:13px;color:#e11d48;font-weight:600;margin-top:8px;">${items.length} teaser cards - ${items.filter(t=>t.active!==false).length} active</div>
+    </div>
+    ${messengerPreview}
+    <div class="card" style="border:2px solid #fecdd3;">
+      <h2 id="tc-form-title">Add Teaser Card</h2>
+      <form action="/teaser-card-add" method="POST" id="tc-form">
+        <input type="hidden" name="editIndex" id="tc-idx" value=""/>
+        <label>Teaser Photo URL (horizontal — 909x476 or wider)</label>
+        <input name="photo" id="tc-photo" placeholder="https://i.imgur.com/xxxxx.png" required/>
+        <div class="row" style="margin-top:8px;">
+          <div><label>Title</label><input name="title" id="tc-title" placeholder="Hello gorgeous" required/></div>
+          <div><label>Subtitle</label><input name="subtitle" id="tc-sub" placeholder="Your video is ready"/></div>
+        </div>
+        <div style="margin-top:14px;background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;padding:12px;">
+          <div style="font-size:13px;font-weight:600;color:#e11d48;margin-bottom:10px;">Postback Buttons (1-3) — what fan sees</div>
+          ${[1,2,3].map(n => {
+            const req_attr = n === 1 ? ' required' : '';
+            return '<div style="border:1px solid #fda4af;border-radius:8px;padding:10px;margin-bottom:8px;background:#fff;"><div style="font-size:12px;font-weight:600;color:#e11d48;margin-bottom:6px;">Button ' + n + (n > 1 ? ' (optional)' : '') + '</div><div class="row"><div><label>Button Label</label><input name="btn' + n + 'Label" id="tc-b' + n + 'l" placeholder="' + (n===1?'WATCH VIDEO':n===2?'SEE CONTENT':'') + '"' + req_attr + '/></div><div><label>Payoff Type</label><select name="btn' + n + 'PayoffType" id="tc-b' + n + 'pt"><option value="media">Media Template (video/photo)</option><option value="card">Card</option></select></div></div><div class="row" style="margin-top:4px;"><div><label>Payoff Media URL (for media type)</label><input name="btn' + n + 'PayoffMedia" id="tc-b' + n + 'pm" placeholder="https://i.imgur.com/video.mp4"/></div><div><label>Media Type</label><select name="btn' + n + 'PayoffMediaType" id="tc-b' + n + 'pmt"><option value="image">Image</option><option value="video">Video</option><option value="gif">GIF</option></select></div></div><div><label>Payoff Button Text</label><input name="btn' + n + 'PayoffButtonText" id="tc-b' + n + 'pbt" placeholder="WHATSAPP VIDEO" value="' + (n===1?'WHATSAPP VIDEO':'SEE MORE') + '"/></div><div style="margin-top:6px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:6px;">' + setNames.map(function(name) { var color = name === DEFAULT_SET ? '#3a8dde' : name === SECOND_SET ? '#f59e0b' : '#8b5cf6'; return '<div style="display:flex;align-items:center;gap:4px;margin-bottom:3px;"><span style="background:' + color + ';color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;min-width:80px;text-align:center;">' + esc(name) + '</span><input name="btn' + n + 'Url_' + esc(name) + '" id="tc-b' + n + 'u-' + esc(name) + '" placeholder="https://..." style="flex:1;font-size:11px;padding:5px;border:1px solid #cbd5e1;border-radius:4px;"/></div>'; }).join('') + '</div></div>';
+          }).join('')}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button type="submit" class="btn btn-green" id="tc-submit">Add Teaser Card</button>
+          <button type="button" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="tc-cancel" onclick="resetTC()">Cancel</button>
+        </div>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Existing Teaser Cards (${items.length})</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">${cards || '<span style="color:#94a3b8;">None yet.</span>'}</div>
+    </div>
+    <script>
+    var TC_DATA=${JSON.stringify(items)};
+    function editTC(i){var t=TC_DATA[i];if(!t)return;document.getElementById('tc-idx').value=i;document.getElementById('tc-photo').value=t.photo||'';document.getElementById('tc-title').value=t.title||'';document.getElementById('tc-sub').value=t.subtitle||'';var btns=t.buttons||[];for(var n=1;n<=3;n++){var b=btns[n-1]||{};try{document.getElementById('tc-b'+n+'l').value=b.label||'';document.getElementById('tc-b'+n+'pt').value=b.payoffType||'media';document.getElementById('tc-b'+n+'pm').value=b.payoffMedia||'';document.getElementById('tc-b'+n+'pmt').value=b.payoffMediaType||'image';document.getElementById('tc-b'+n+'pbt').value=b.payoffButtonText||'';var urls=b.redirectUrls||{};${setNames.map(name => "try{document.getElementById('tc-b'+n+'u-" + name + "').value=urls['" + name + "']||b.redirectUrl||'';}catch(e){}").join('')}}catch(e){}}document.getElementById('tc-submit').textContent='Save';document.getElementById('tc-cancel').style.display='inline-block';document.getElementById('tc-form').scrollIntoView({behavior:'smooth'});}
+    function resetTC(){document.getElementById('tc-idx').value='';document.getElementById('tc-photo').value='';document.getElementById('tc-title').value='';document.getElementById('tc-sub').value='';for(var n=1;n<=3;n++){try{document.getElementById('tc-b'+n+'l').value='';document.getElementById('tc-b'+n+'pt').value='media';document.getElementById('tc-b'+n+'pm').value='';document.getElementById('tc-b'+n+'pmt').value='image';document.getElementById('tc-b'+n+'pbt').value='';${setNames.map(name => "try{document.getElementById('tc-b'+n+'u-" + name + "').value='';}catch(e){}").join('')}}catch(e){}}document.getElementById('tc-submit').textContent='Add Teaser Card';document.getElementById('tc-cancel').style.display='none';}
+    </script>
+  </div>`;
+}
+
+// --- Teaser Card Routes ---
+app.post('/teaser-card-add', (req, res) => {
+  const items = loadTeaserCards();
+  const setNames = getSetNames();
+  const buttons = [];
+  for (let n = 1; n <= 3; n++) {
+    const label = (req.body['btn' + n + 'Label'] || '').trim();
+    if (!label) continue;
+    const redirectUrls = {};
+    let firstUrl = '';
+    setNames.forEach(name => {
+      const val = normalizeUrl(req.body['btn' + n + 'Url_' + name] || '');
+      if (val) { redirectUrls[name] = val; if (!firstUrl) firstUrl = val; }
+    });
+    buttons.push({
+      label, payoffType: req.body['btn' + n + 'PayoffType'] || 'media',
+      payoffMedia: normalizeUrl(req.body['btn' + n + 'PayoffMedia'] || ''),
+      payoffMediaType: req.body['btn' + n + 'PayoffMediaType'] || 'image',
+      payoffButtonText: req.body['btn' + n + 'PayoffButtonText'] || 'Open',
+      redirectUrl: firstUrl, redirectUrls
+    });
+  }
+  if (!buttons.length) return res.redirect('/?page=teaser-cards&error=Need+at+least+1+button');
+  const entry = {
+    id: 'tc_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    photo: normalizeUrl(req.body.photo), title: req.body.title || 'Hey!',
+    subtitle: req.body.subtitle || '', buttons, active: true
+  };
+  const idx = req.body.editIndex !== undefined && req.body.editIndex !== '' ? parseInt(req.body.editIndex) : -1;
+  if (idx >= 0 && items[idx]) { entry.id = items[idx].id; entry.active = items[idx].active; items[idx] = entry; }
+  else items.push(entry);
+  saveTeaserCards(items);
+  res.redirect('/?page=teaser-cards&saved=1');
+});
+app.get('/teaser-card-toggle', (req, res) => {
+  const items = loadTeaserCards();
+  const idx = parseInt(req.query.index);
+  if (items[idx]) { items[idx].active = items[idx].active === false ? true : false; saveTeaserCards(items); }
+  res.redirect('/?page=teaser-cards&saved=1');
+});
+app.get('/teaser-card-delete', (req, res) => {
+  const items = loadTeaserCards();
+  items.splice(parseInt(req.query.index), 1);
+  saveTeaserCards(items);
+  res.redirect('/?page=teaser-cards&saved=1');
 });
 // ============================================
 cron.schedule('* * * * *', () => {
