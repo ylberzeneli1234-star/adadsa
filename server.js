@@ -3104,6 +3104,12 @@ function renderMediaTemplatesPage(req) {
       <p style="color:#6b7280;font-size:13px;">Full-width image, video, or GIF + button. No title/subtitle. Plays inline in chat.</p>
       <div style="font-size:13px;color:#f97316;font-weight:600;margin-top:8px;">${items.length} media templates · ${items.filter(t=>t.active!==false).length} active</div>
     </div>
+    ${(function(){
+      var a = items.find(function(t){ return t.active !== false; });
+      if (!a) return '';
+      var isVideo = a.mediaType === 'video';
+      return '<div class="card" style="border:2px solid #fed7aa;background:#fff8f0;"><h2 style="font-size:14px;color:#f97316;">👁️ Messenger Preview</h2><div style="max-width:320px;margin:8px auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);">' + (isVideo ? '<div style="width:100%;aspect-ratio:16/9;background:#0f172a;display:flex;align-items:center;justify-content:center;"><div style="width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;"><span style="font-size:28px;color:rgba(255,255,255,0.9);">▶</span></div></div>' : '<img src="' + esc(a.photo) + '" style="width:100%;display:block;" onerror="this.style.display=\'none\';"/>') + '<div style="border-top:1px solid #e5e7eb;padding:12px 0;text-align:center;"><span style="color:#3b82f6;font-size:15px;font-weight:500;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(a.buttonText || 'See My Photos') + '</span></div></div><div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Full-width, no title/subtitle — just photo + button</div></div>';
+    })()}
     <div class="card" style="border:2px solid #fed7aa;">
       <h2 id="mt-form-title">➕ Add Media Template</h2>
       <form action="/media-template-add" method="POST" id="mt-form">
@@ -3156,6 +3162,12 @@ function renderButtonMessagesPage(req) {
       <p style="color:#6b7280;font-size:13px;">Text message + up to 3 clickable buttons. No image. Conversational feel.</p>
       <div style="font-size:13px;color:#ec4899;font-weight:600;margin-top:8px;">${items.length} button messages · ${items.filter(t=>t.active!==false).length} active</div>
     </div>
+    ${(function(){
+      var a = items.find(function(t){ return t.active !== false; });
+      if (!a) return '';
+      var btns = (a.buttons || []).map(function(b){ return '<div style="border-top:1px solid #e5e7eb;padding:11px 0;text-align:center;"><span style="color:#3b82f6;font-size:15px;font-weight:500;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(b.title) + '</span></div>'; }).join('');
+      return '<div class="card" style="border:2px solid #fbcfe8;background:#fdf2f8;"><h2 style="font-size:14px;color:#ec4899;">👁️ Messenger Preview</h2><div style="max-width:320px;margin:8px auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);"><div style="padding:14px 16px;"><div style="font-size:15px;color:#1a1d2e;line-height:1.4;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(a.text) + '</div></div>' + btns + '</div><div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Text + clickable buttons — no image, conversational feel</div></div>';
+    })()}
     <div class="card" style="border:2px solid #fbcfe8;">
       <h2 id="bm-form-title">➕ Add Button Message</h2>
       <form action="/button-message-add" method="POST" id="bm-form">
@@ -3216,6 +3228,12 @@ function renderCarouselSetsPage(req) {
       <p style="color:#6b7280;font-size:13px;">Swipeable cards side by side. Fan picks who to chat with.</p>
       <div style="font-size:13px;color:#8b5cf6;font-weight:600;margin-top:8px;">${sets.length} carousel sets · ${sets.filter(t=>t.active!==false).length} active</div>
     </div>
+    ${(function(){
+      var a = sets.find(function(s){ return s.active !== false && s.cards && s.cards.length >= 2; });
+      if (!a) return '';
+      var cards = (a.cards || []).map(function(c){ return '<div style="min-width:180px;max-width:180px;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);flex-shrink:0;"><div style="width:180px;height:180px;background:#f1f5f9;overflow:hidden;"><img src="' + esc(c.photo) + '" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.style.display=\'none\';"/></div><div style="padding:10px 12px;"><div style="font-weight:600;font-size:14px;color:#1a1d2e;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(c.title) + '</div><div style="font-size:12px;color:#6b7280;margin-top:2px;">' + esc(c.subtitle || '') + '</div></div><div style="border-top:1px solid #e5e7eb;padding:10px 0;text-align:center;"><span style="color:#3b82f6;font-size:14px;font-weight:500;">' + esc(c.buttonText || 'Chat') + '</span></div></div>'; }).join('');
+      return '<div class="card" style="border:2px solid #ddd6fe;background:#faf5ff;"><h2 style="font-size:14px;color:#8b5cf6;">👁️ Messenger Preview — "' + esc(a.name) + '"</h2><div style="max-width:420px;margin:8px auto;display:flex;gap:10px;overflow-x:auto;padding:4px;">' + cards + '</div><div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Fan swipes left/right to browse — each card has its own redirect</div></div>';
+    })()}
     <div class="card" style="border:2px solid #ddd6fe;">
       <h2 id="cs-form-title">➕ Create Carousel Set</h2>
       <form action="/carousel-set-add" method="POST" id="cs-form">
@@ -3245,6 +3263,73 @@ function renderCarouselSetsPage(req) {
     function editCS(i){var s=CS_DATA[i];if(!s)return;document.getElementById('cs-form-title').textContent='✏️ Editing: '+(s.name||'Set '+(i+1));document.getElementById('cs-idx').value=i;document.getElementById('cs-name').value=s.name||'';var cards=s.cards||[];for(var n=1;n<=3;n++){var c=cards[n-1]||{};try{document.getElementById('cs-c'+n+'t').value=c.title||'';document.getElementById('cs-c'+n+'s').value=c.subtitle||'';document.getElementById('cs-c'+n+'p').value=c.photo||'';document.getElementById('cs-c'+n+'b').value=c.buttonText||'Chat Now';document.getElementById('cs-c'+n+'r').value=c.redirect||'';}catch(e){}}document.getElementById('cs-submit').textContent='💾 Save';document.getElementById('cs-cancel').style.display='inline-block';document.getElementById('cs-form').scrollIntoView({behavior:'smooth'});}
     function resetCS(){document.getElementById('cs-form-title').textContent='➕ Create Carousel Set';document.getElementById('cs-idx').value='';document.getElementById('cs-name').value='';for(var n=1;n<=3;n++){try{document.getElementById('cs-c'+n+'t').value='';document.getElementById('cs-c'+n+'s').value='';document.getElementById('cs-c'+n+'p').value='';document.getElementById('cs-c'+n+'b').value='Chat Now';document.getElementById('cs-c'+n+'r').value='';}catch(e){}}document.getElementById('cs-submit').textContent='➕ Create Carousel Set';document.getElementById('cs-cancel').style.display='none';}
     </script>
+  </div>`;
+}
+
+// ============================================
+// RENDER: Quick Replies Page (with Messenger preview)
+// ============================================
+function renderQuickRepliesPage(req) {
+  const items = loadQuickReplyConfig();
+  const s = loadSettings();
+  const qrTexts = Array.isArray(s.quickReplyTexts) ? s.quickReplyTexts : [];
+  const chips = items.map((q, i) => {
+    const isActive = q.active !== false;
+    return `<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="background:#06b6d4;color:#fff;font-size:13px;font-weight:500;padding:5px 14px;border-radius:20px;">${esc(q.label)}</div>
+      <div style="flex:1;font-size:11px;color:#6b7280;">replies with: <strong>${esc(q.replyFormat || 'card')}</strong></div>
+      <a href="/quick-reply-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? 'pause' : 'on'}</a>
+      <a href="/quick-reply-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">x</a>
+    </div>`;
+  }).join('');
+  const activePills = items.filter(q => q.active !== false);
+  const previewText = qrTexts.length ? qrTexts[0] : 'Hey gorgeous, wanna chat?';
+  const previewPills = activePills.map(q => `<div style="background:#fff;border:1.5px solid #3b82f6;border-radius:20px;padding:7px 16px;font-size:14px;color:#3b82f6;font-weight:500;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">${esc(q.label)}</div>`).join('');
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>Quick Replies</h2>
+      <p style="color:#6b7280;font-size:13px;">Text message + tappable pills underneath. Fan taps one = resets 24h window + bot auto-replies.</p>
+      <div style="font-size:13px;color:#06b6d4;font-weight:600;margin-top:8px;">${items.length} pills - ${qrTexts.length} messages in pool</div>
+    </div>
+    <div class="card" style="border:2px solid #a5f3fc;background:#f0fdfa;">
+      <h2 style="font-size:14px;color:#06b6d4;">Messenger Preview</h2>
+      <div style="max-width:320px;margin:8px auto;">
+        <div style="background:#3b82f6;color:#fff;padding:12px 18px;border-radius:20px;border-bottom-left-radius:6px;font-size:15px;line-height:1.4;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;display:inline-block;max-width:85%;">${esc(previewText)}</div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+          ${previewPills || '<span style="color:#94a3b8;font-size:12px;">Add pills below</span>'}
+        </div>
+      </div>
+      <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:10px;">Text bubble + tappable pills. Disappear after fan taps one.</div>
+    </div>
+    <div class="card" style="border:2px solid #a5f3fc;">
+      <h2>Message Text Pool</h2>
+      <p style="color:#6b7280;font-size:12px;">Random text picked from this pool appears above the pills.</p>
+      <div style="margin-bottom:10px;">
+        ${qrTexts.map((t, i) => '<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;margin-bottom:4px;"><span style="flex:1;font-size:13px;color:#1a1d2e;">' + esc(t) + '</span><a href="/quick-reply-remove-text?index=' + i + '" onclick="return confirm(\\\"Remove?\\\")" style="color:#dc2626;text-decoration:none;font-weight:700;">x</a></div>').join('') || '<span style="color:#94a3b8;font-size:12px;">No messages yet.</span>'}
+      </div>
+      <form action="/quick-reply-add-text" method="POST">
+        <textarea name="texts" placeholder="Hey gorgeous, wanna chat?" style="min-height:80px;"></textarea>
+        <button type="submit" class="btn btn-green" style="margin-top:8px;">+ Add Messages</button>
+      </form>
+    </div>
+    <div class="card" style="border:2px solid #a5f3fc;">
+      <h2>Pills (buttons fans can tap)</h2>
+      <div style="display:grid;gap:8px;margin-bottom:14px;">${chips || '<span style="color:#94a3b8;">None yet.</span>'}</div>
+      <form action="/quick-reply-add" method="POST" style="background:#ecfeff;border:1px solid #a5f3fc;border-radius:8px;padding:12px;">
+        <div class="row">
+          <div><label>Pill Label</label><input name="label" placeholder="Chat" required/></div>
+          <div><label>When tapped, reply with</label>
+            <select name="replyFormat">
+              <option value="card">Card</option>
+              <option value="media">Media Template</option>
+              <option value="text">Text</option>
+              <option value="button-msg">Button Message</option>
+            </select>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-green" style="margin-top:8px;">+ Add Pill</button>
+      </form>
+    </div>
   </div>`;
 }
 
