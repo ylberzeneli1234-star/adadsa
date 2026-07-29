@@ -997,13 +997,24 @@ app.post('/webhook', (req, res) => {
         const qrs = loadQuickReplyConfig();
         const qr = qrs.find(q => q.payload === event.message.quick_reply.payload);
         const fmt = qr ? qr.replyFormat : 'card';
-        if (fmt === 'media') sendMediaTemplateMsg(page, psid);
-        else if (fmt === 'button-msg') sendButtonTemplateMsg(page, psid);
-        else if (fmt === 'carousel') sendCarouselMsg(page, psid);
-        else if (fmt === 'raw-photo') sendRawPhotoCombo(page, psid);
-        else if (fmt === 'teaser') sendTeaserCard(page, psid);
-        else if (fmt === 'text') { const pool = (loadLibrary().textPool || []); if (pool.length) sendText(page, psid, pool[Math.floor(Math.random() * pool.length)]); }
-        else sendCard(page, psid);
+        const itemId = qr ? qr.replyItemId : '';
+        if (fmt === 'media') {
+          if (itemId) { const all = loadMediaTemplates(); const idx = parseInt(itemId); if (all[idx]) { const item = all[idx]; const attachmentId = await uploadMediaAttachment(page, item.photo, item.mediaType || 'image'); if (attachmentId) { const setN = pageSet(page); const rd = normalizeUrl((item.redirectUrls && item.redirectUrls[setN]) || item.buttonUrl || page.whatsapp || ''); const tu = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}&d=${encodeURIComponent(rd)}`; await fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({recipient:{id:psid},message:{attachment:{type:'template',payload:{template_type:'media',elements:[{media_type:item.mediaType==='video'?'video':'image',attachment_id:attachmentId,buttons:[{type:'web_url',url:tu,title:item.buttonText||'Open'}]}]}}}}) }); } else sendCard(page, psid); } else sendMediaTemplateMsg(page, psid); }
+          else sendMediaTemplateMsg(page, psid);
+        } else if (fmt === 'button-msg') {
+          if (itemId) { const all = loadButtonMessages(); const idx = parseInt(itemId); if (all[idx]) { sendButtonTemplateMsg(page, psid); } else sendButtonTemplateMsg(page, psid); }
+          else sendButtonTemplateMsg(page, psid);
+        } else if (fmt === 'carousel') {
+          sendCarouselMsg(page, psid);
+        } else if (fmt === 'raw-photo') {
+          sendRawPhotoCombo(page, psid);
+        } else if (fmt === 'teaser') {
+          sendTeaserCard(page, psid);
+        } else if (fmt === 'text') { const pool = (loadLibrary().textPool || []); if (pool.length) sendText(page, psid, pool[Math.floor(Math.random() * pool.length)]); }
+        else {
+          if (itemId && fmt === 'card') { const lib = loadLibrary(); const tmpl = (lib.cardTemplates||[]).find(t=>t.id===itemId); if (tmpl) { sendCard(page, psid, { photo: tmpl.photo, title: tmpl.title, subtitle: tmpl.subtitle, redirect: tmpl.redirect }); } else sendCard(page, psid); }
+          else sendCard(page, psid);
+        }
       } else if (event.message && isNewFan) {
         sendCard(page, psid);
       }
@@ -3350,7 +3361,7 @@ function renderQuickRepliesPage(req) {
     const isActive = q.active !== false;
     return `<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;${isActive ? '' : 'opacity:0.5;'}">
       <div style="background:#06b6d4;color:#fff;font-size:13px;font-weight:500;padding:5px 14px;border-radius:20px;">${esc(q.label)}</div>
-      <div style="flex:1;font-size:11px;color:#6b7280;">replies with: <strong>${esc(q.replyFormat || 'card')}</strong></div>
+      <div style="flex:1;font-size:11px;color:#6b7280;">replies with: <strong>${esc(q.replyFormat || 'card')}</strong>${q.replyItemId ? ' · <em>' + esc(q.replyItemId) + '</em>' : ' · 🎲 random'}</div>
       <a href="/quick-reply-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? 'pause' : 'on'}</a>
       <button type="button" class="qbtn" style="background:#6366f1;" onclick="editQR(${i})">edit</button>
       <a href="/quick-reply-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">x</a>
@@ -3409,6 +3420,13 @@ function renderQuickRepliesPage(req) {
             </select>
           </div>
         </div>
+        <div id="qr-item-row" style="margin-top:8px;">
+          <label>Which one?</label>
+          <select name="replyItemId" id="qr-pill-item" style="width:100%;">
+            <option value="">🎲 Random (any active)</option>
+          </select>
+        </div>
+        <input type="hidden" name="replyItemId" id="qr-pill-item-hidden" value=""/>
         <div style="display:flex;gap:8px;margin-top:8px;">
           <button type="submit" class="btn btn-green" id="qr-pill-submit">+ Add Pill</button>
           <button type="button" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="qr-pill-cancel" onclick="resetQRPill()">Cancel</button>
@@ -3418,8 +3436,26 @@ function renderQuickRepliesPage(req) {
     <script>
     var QR_PILLS=${JSON.stringify(items)};
     var QR_TEXTS=${JSON.stringify(qrTexts)};
-    function editQR(i){var q=QR_PILLS[i];if(!q)return;document.getElementById('qr-pill-idx').value=i;document.getElementById('qr-pill-label').value=q.label||'';document.getElementById('qr-pill-format').value=q.replyFormat||'card';document.getElementById('qr-pill-submit').textContent='Save Pill';document.getElementById('qr-pill-cancel').style.display='inline-block';document.getElementById('qr-pill-form').scrollIntoView({behavior:'smooth'});}
-    function resetQRPill(){document.getElementById('qr-pill-idx').value='';document.getElementById('qr-pill-label').value='';document.getElementById('qr-pill-format').value='card';document.getElementById('qr-pill-submit').textContent='+ Add Pill';document.getElementById('qr-pill-cancel').style.display='none';}
+    var QR_ITEMS={
+      card: ${JSON.stringify((loadLibrary().cardTemplates||[]).filter(t=>t.active!==false).map(t=>({id:t.id,label:t.title||t.id})))},
+      media: ${JSON.stringify(loadMediaTemplates().filter(t=>t.active!==false).map((t,i)=>({id:String(i),label:'#'+(i+1)+' '+(t.buttonText||'Media')})))},
+      'button-msg': ${JSON.stringify(loadButtonMessages().filter(t=>t.active!==false).map((t,i)=>({id:String(i),label:'#'+(i+1)+' '+(t.text||'').slice(0,30)})))},
+      carousel: ${JSON.stringify(loadCarouselSets().filter(t=>t.active!==false).map((t,i)=>({id:String(i),label:t.name||'Set '+(i+1)})))},
+      'raw-photo': ${JSON.stringify(loadRawPhotoSets().filter(t=>t.active!==false).map((t,i)=>({id:String(i),label:'#'+(i+1)+' '+(t.followupText||'').slice(0,30)})))},
+      teaser: ${JSON.stringify(loadTeaserCards().filter(t=>t.active!==false).map(t=>({id:t.id,label:t.title||t.id})))}
+    };
+    function updateQRItemDropdown(){
+      var fmt=document.getElementById('qr-pill-format').value;
+      var sel=document.getElementById('qr-pill-item');
+      sel.innerHTML='<option value="">🎲 Random (any active)</option>';
+      var items=QR_ITEMS[fmt]||[];
+      items.forEach(function(it){var o=document.createElement('option');o.value=it.id;o.textContent=it.label;sel.appendChild(o);});
+      document.getElementById('qr-item-row').style.display=(fmt==='text')?'none':'block';
+    }
+    document.getElementById('qr-pill-format').addEventListener('change',updateQRItemDropdown);
+    updateQRItemDropdown();
+    function editQR(i){var q=QR_PILLS[i];if(!q)return;document.getElementById('qr-pill-idx').value=i;document.getElementById('qr-pill-label').value=q.label||'';document.getElementById('qr-pill-format').value=q.replyFormat||'card';updateQRItemDropdown();if(q.replyItemId)document.getElementById('qr-pill-item').value=q.replyItemId;document.getElementById('qr-pill-submit').textContent='Save Pill';document.getElementById('qr-pill-cancel').style.display='inline-block';document.getElementById('qr-pill-form').scrollIntoView({behavior:'smooth'});}
+    function resetQRPill(){document.getElementById('qr-pill-idx').value='';document.getElementById('qr-pill-label').value='';document.getElementById('qr-pill-format').value='card';updateQRItemDropdown();document.getElementById('qr-pill-submit').textContent='+ Add Pill';document.getElementById('qr-pill-cancel').style.display='none';}
     function editQRText(i){var t=QR_TEXTS[i];if(t===undefined)return;document.getElementById('qr-text-idx').value=i;document.getElementById('qr-text-input').value=t;document.getElementById('qr-text-submit').textContent='Save Text';document.getElementById('qr-text-cancel').style.display='inline-block';document.getElementById('qr-text-input').scrollIntoView({behavior:'smooth'});}
     function resetQRText(){document.getElementById('qr-text-idx').value='';document.getElementById('qr-text-input').value='';document.getElementById('qr-text-submit').textContent='+ Add Messages';document.getElementById('qr-text-cancel').style.display='none';}
     </script>
@@ -3542,8 +3578,9 @@ app.post('/quick-reply-add', (req, res) => {
   if (idx >= 0 && items[idx]) {
     items[idx].label = req.body.label;
     items[idx].replyFormat = req.body.replyFormat || 'card';
+    items[idx].replyItemId = req.body.replyItemId || '';
   } else {
-    items.push({ id: 'qr_' + Date.now(), label: req.body.label, replyFormat: req.body.replyFormat || 'card', payload: 'QR_' + Date.now(), active: true });
+    items.push({ id: 'qr_' + Date.now(), label: req.body.label, replyFormat: req.body.replyFormat || 'card', replyItemId: req.body.replyItemId || '', payload: 'QR_' + Date.now(), active: true });
   }
   saveQuickReplyConfig(items);
   res.redirect('/?page=quick-replies&saved=1');
