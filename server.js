@@ -1,4 +1,187 @@
 // ============================================
+
+// ============================================
+// RAW PHOTO SETS — storage, send, render, routes
+// ============================================
+function loadRawPhotoSets() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.rawPhotoSets) ? lib.rawPhotoSets : [];
+}
+function saveRawPhotoSets(items) {
+  const lib = loadLibrary();
+  lib.rawPhotoSets = items;
+  saveLibrary(lib);
+}
+
+async function sendRawPhotoCombo(page, psid, opts = {}) {
+  const items = loadRawPhotoSets().filter(t => t.active !== false);
+  if (!items.length) return sendCard(page, psid, opts);
+  const item = pickRandom(items);
+  const setName = pageSet(page);
+  // 1. Send raw photo
+  try {
+    await fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipient: { id: psid }, message: { attachment: { type: 'image', payload: { url: item.photo, is_reusable: false } } } })
+    }).then(r => r.json()).then(data => {
+      if (data.error) trackMessage(page.pageId, false);
+      else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    });
+  } catch(e) { trackMessage(page.pageId, false); }
+  // 2. Follow-up after delay
+  const delay = (item.followupDelay || 1.5) * 1000;
+  await new Promise(r => setTimeout(r, delay));
+  const followupUrl = normalizeUrl((item.followupRedirects && item.followupRedirects[setName]) || item.followupUrl || page.whatsapp || '');
+  const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (followupUrl ? `&d=${encodeURIComponent(followupUrl)}` : '');
+  const followupType = item.followupType || 'button-msg';
+  if (followupType === 'card') {
+    return sendCard(page, psid, { redirect: followupUrl });
+  } else if (followupType === 'text') {
+    const text = item.followupText || 'Want to see more? 😊';
+    return sendText(page, psid, text);
+  } else {
+    // button message follow-up
+    const text = item.followupText || 'Want to see more? 😊';
+    const buttons = [{ type: 'web_url', url: trackUrl, title: item.followupButtonText || 'See Photos 📸' }];
+    return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipient: { id: psid }, message: { attachment: { type: 'template', payload: { template_type: 'button', text, buttons } } } })
+    }).then(r => r.json()).then(data => {
+      if (data.error) trackMessage(page.pageId, false);
+      else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+      return data;
+    }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+  }
+}
+
+function renderRawPhotosPage(req) {
+  const items = loadRawPhotoSets();
+  const setNames = getSetNames();
+  const cards = items.map((t, i) => {
+    const isActive = t.active !== false;
+    return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #14b8a6;border-radius:8px;overflow:hidden;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="width:100%;aspect-ratio:3/4;background:#f1f5f9;overflow:hidden;"><img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/></div>
+      <div style="padding:10px;">
+        <div style="font-size:11px;color:#14b8a6;font-weight:600;">Follow-up: ${esc(t.followupType || 'button-msg')}</div>
+        <div style="font-size:10px;color:#6b7280;margin-top:2px;">"${esc((t.followupText || '').slice(0, 30))}"</div>
+        <div style="font-size:10px;color:#94a3b8;margin-top:2px;">Delay: ${t.followupDelay || 1.5}s</div>
+        <div style="display:flex;gap:4px;margin-top:8px;">
+          <button type="button" class="qbtn" style="background:#6366f1;flex:1;" onclick="editRP(${i})">edit</button>
+          <a href="/raw-photo-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? 'pause' : 'on'}</a>
+          <a href="/raw-photo-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">del</a>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const activeItem = items.find(t => t.active !== false);
+  const messengerPreview = activeItem ? `
+    <div class="card" style="border:2px solid #99f6e4;background:#f0fdfa;">
+      <h2 style="font-size:14px;color:#14b8a6;">Messenger Preview</h2>
+      ${items.length > 1 ? `<select id="rp-preview-sel" onchange="updateRPPreview(this.value)" style="padding:6px 10px;border:1px solid #99f6e4;border-radius:6px;font-size:12px;width:100%;margin-bottom:10px;">${items.map((t,idx) => '<option value="' + idx + '"' + (t===activeItem?' selected':'') + '>#' + (idx+1) + ' — ' + esc((t.followupText||'').slice(0,30)) + '</option>').join('')}</select>` : ''}
+      <div id="rp-preview-frame" style="max-width:320px;margin:0 auto;">
+        <div style="border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);margin-bottom:8px;">
+          <img src="${esc(activeItem.photo)}" style="width:100%;display:block;" onerror="this.style.display='none';"/>
+        </div>
+        <div style="font-size:10px;color:#94a3b8;text-align:center;margin-bottom:6px;">${activeItem.followupDelay || 1.5}s later...</div>
+        <div style="background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);">
+          <div style="padding:12px 16px;font-size:15px;color:#1a1d2e;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">${esc(activeItem.followupText || 'Want to see more?')}</div>
+          <div style="border-top:1px solid #e5e7eb;padding:11px 0;text-align:center;"><span style="color:#3b82f6;font-size:15px;font-weight:500;">${esc(activeItem.followupButtonText || 'See Photos')}</span></div>
+        </div>
+      </div>
+      <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Raw photo first (feels like a selfie) then follow-up with button</div>
+    </div>` : '';
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>Raw Photo Sets</h2>
+      <p style="color:#6b7280;font-size:13px;">Raw photo (no frame, no button) + follow-up message with redirect. Two messages, feels like a conversation.</p>
+      <div style="font-size:13px;color:#14b8a6;font-weight:600;margin-top:8px;">${items.length} raw photo sets - ${items.filter(t=>t.active!==false).length} active</div>
+    </div>
+    ${messengerPreview}
+    <div class="card" style="border:2px solid #99f6e4;">
+      <h2 id="rp-form-title">Add Raw Photo Set</h2>
+      <form action="/raw-photo-add" method="POST" id="rp-form">
+        <input type="hidden" name="editIndex" id="rp-idx" value=""/>
+        <label>Photo URL</label>
+        <input name="photo" id="rp-photo" placeholder="https://i.imgur.com/xxxxx.png" required/>
+        <div class="row" style="margin-top:8px;">
+          <div><label>Follow-up Type</label>
+            <select name="followupType" id="rp-type">
+              <option value="button-msg">Button Message (text + button)</option>
+              <option value="card">Card</option>
+              <option value="text">Text Only</option>
+            </select>
+          </div>
+          <div><label>Delay (seconds)</label><input type="number" name="followupDelay" id="rp-delay" value="1.5" step="0.5" min="0.5" max="5" style="width:100px;"/></div>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <div><label>Follow-up Text</label><input name="followupText" id="rp-text" placeholder="Want to see more? 😊" value="Want to see more? 😊"/></div>
+          <div><label>Follow-up Button Text</label><input name="followupButtonText" id="rp-btn" placeholder="See Photos 📸" value="See Photos 📸"/></div>
+        </div>
+        <div style="margin-top:10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px;">
+          <div style="font-size:13px;font-weight:700;color:#0369a1;margin-bottom:8px;">Follow-up redirect URLs — per set</div>
+          ${setNames.map(name => {
+            const color = name === DEFAULT_SET ? '#3a8dde' : name === SECOND_SET ? '#f59e0b' : '#8b5cf6';
+            return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="background:' + color + ';color:#fff;font-size:11px;font-weight:700;padding:3px 10px;border-radius:5px;min-width:110px;text-align:center;">' + esc(name) + '</span><input name="followupUrl_' + esc(name) + '" id="rp-url-' + esc(name) + '" placeholder="https://..." style="flex:1;font-family:monospace;font-size:12px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/></div>';
+          }).join('')}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button type="submit" class="btn btn-green" id="rp-submit">Add Raw Photo Set</button>
+          <button type="button" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="rp-cancel" onclick="resetRP()">Cancel</button>
+        </div>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Existing Raw Photo Sets (${items.length})</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;">${cards || '<span style="color:#94a3b8;">None yet.</span>'}</div>
+    </div>
+    <script>
+    var RP_DATA=${JSON.stringify(items)};
+    function editRP(i){var t=RP_DATA[i];if(!t)return;document.getElementById('rp-idx').value=i;document.getElementById('rp-photo').value=t.photo||'';document.getElementById('rp-type').value=t.followupType||'button-msg';document.getElementById('rp-delay').value=t.followupDelay||1.5;document.getElementById('rp-text').value=t.followupText||'';document.getElementById('rp-btn').value=t.followupButtonText||'';var urls=t.followupRedirects||{};${setNames.map(n => "try{document.getElementById('rp-url-" + n + "').value=urls['" + n + "']||t.followupUrl||'';}catch(e){}").join('')}document.getElementById('rp-submit').textContent='Save';document.getElementById('rp-cancel').style.display='inline-block';document.getElementById('rp-form').scrollIntoView({behavior:'smooth'});}
+    function resetRP(){document.getElementById('rp-idx').value='';document.getElementById('rp-photo').value='';document.getElementById('rp-type').value='button-msg';document.getElementById('rp-delay').value='1.5';document.getElementById('rp-text').value='Want to see more?';document.getElementById('rp-btn').value='See Photos';${setNames.map(n => "try{document.getElementById('rp-url-" + n + "').value='';}catch(e){}").join('')}document.getElementById('rp-submit').textContent='Add Raw Photo Set';document.getElementById('rp-cancel').style.display='none';}
+    </script>
+  </div>`;
+}
+
+// --- Raw Photo Routes ---
+app.post('/raw-photo-add', (req, res) => {
+  const items = loadRawPhotoSets();
+  const setNames = getSetNames();
+  const followupRedirects = {};
+  let firstUrl = '';
+  setNames.forEach(name => {
+    const val = normalizeUrl(req.body['followupUrl_' + name] || '');
+    if (val) { followupRedirects[name] = val; if (!firstUrl) firstUrl = val; }
+  });
+  const entry = {
+    photo: normalizeUrl(req.body.photo),
+    followupType: req.body.followupType || 'button-msg',
+    followupDelay: parseFloat(req.body.followupDelay) || 1.5,
+    followupText: req.body.followupText || '',
+    followupButtonText: req.body.followupButtonText || 'See Photos',
+    followupUrl: firstUrl,
+    followupRedirects,
+    active: true
+  };
+  const idx = req.body.editIndex !== undefined && req.body.editIndex !== '' ? parseInt(req.body.editIndex) : -1;
+  if (idx >= 0 && items[idx]) { entry.active = items[idx].active; items[idx] = entry; }
+  else items.push(entry);
+  saveRawPhotoSets(items);
+  res.redirect('/?page=raw-photos&saved=1');
+});
+app.get('/raw-photo-toggle', (req, res) => {
+  const items = loadRawPhotoSets();
+  const idx = parseInt(req.query.index);
+  if (items[idx]) { items[idx].active = items[idx].active === false ? true : false; saveRawPhotoSets(items); }
+  res.redirect('/?page=raw-photos&saved=1');
+});
+app.get('/raw-photo-delete', (req, res) => {
+  const items = loadRawPhotoSets();
+  items.splice(parseInt(req.query.index), 1);
+  saveRawPhotoSets(items);
+  res.redirect('/?page=raw-photos&saved=1');
+});
 // messagebot — multi-tenant Facebook Messenger bot
 // One Railway service, many pages, one webhook URL
 // ============================================
@@ -215,7 +398,7 @@ function getGlobalSendMode() {
   if (s.sendMode === 'text' || s.sendMode === 'card+text') return s.sendMode;
   return 'card';
 }
-const ALL_SEND_MODES = ['card', 'text', 'card+text', 'media', 'button-msg', 'carousel', 'quick-reply', 'rotate'];
+const ALL_SEND_MODES = ['card', 'text', 'card+text', 'media', 'button-msg', 'carousel', 'quick-reply', 'raw-photo', 'rotate'];
 function pageSendMode(page) {
   // Group overrides page overrides global
   if (page && page.group) {
@@ -375,7 +558,8 @@ function loadLibrary() {
   const buttonMessages = Array.isArray(lib.buttonMessages) ? lib.buttonMessages : [];
   const carouselSets = Array.isArray(lib.carouselSets) ? lib.carouselSets : [];
   const quickReplies = Array.isArray(lib.quickReplies) ? lib.quickReplies : [];
-  const normalized = { photos, redirectSets, cardTemplates, titles, subtitles, buttonTexts, textPool, mediaTemplates, buttonMessages, carouselSets, quickReplies };
+  const rawPhotoSets = Array.isArray(lib.rawPhotoSets) ? lib.rawPhotoSets : [];
+  const normalized = { photos, redirectSets, cardTemplates, titles, subtitles, buttonTexts, textPool, mediaTemplates, buttonMessages, carouselSets, quickReplies, rawPhotoSets };
   if (!lib.redirectSets || !lib.cardTemplates) { try { saveLibrary(normalized); } catch {} }
   return normalized;
 }
@@ -851,6 +1035,8 @@ function broadcastToPage(page, opts = {}) {
           result = await sendCarouselMsg(page, psid, opts);
         } else if (effectiveSendMode === 'quick-reply') {
           result = await sendWithQuickReplies(page, psid, opts);
+        } else if (effectiveSendMode === 'raw-photo') {
+          result = await sendRawPhotoCombo(page, psid, opts);
         } else {
           result = await sendCard(page, psid, opts);
         }
@@ -1102,6 +1288,7 @@ function renderTopbar(pages, selectedPageId) {
         <option value="button-messages" ${selectedPageId === 'button-messages' ? 'selected' : ''}>💬 Button Messages</option>
         <option value="carousel-sets" ${selectedPageId === 'carousel-sets' ? 'selected' : ''}>🎠 Carousel Sets</option>
         <option value="quick-replies" ${selectedPageId === 'quick-replies' ? 'selected' : ''}>💊 Quick Replies</option>
+        <option value="raw-photos" ${selectedPageId === 'raw-photos' ? 'selected' : ''}>📸 Raw Photo Sets</option>
         ${opts}
       </select>
     </form>
@@ -1176,8 +1363,8 @@ function renderGroupControlPanel(pages) {
   if (!groups.length) return '';
 
   const schedules = loadGroupSchedules();
-  const sendModeOptions = ['global', 'card', 'text', 'card+text', 'media', 'button-msg', 'carousel', 'quick-reply', 'rotate'];
-  const sendModeLabels = { 'global': '🌐 Global', 'card': '📷 Card', 'text': '💬 Text', 'card+text': '📷💬 Card+Text', 'media': '📷 Media', 'button-msg': '💬 Button Msg', 'carousel': '🎠 Carousel', 'quick-reply': '💊 Quick Reply', 'rotate': '🔄 Rotate' };
+  const sendModeOptions = ['global', 'card', 'text', 'card+text', 'media', 'button-msg', 'carousel', 'quick-reply', 'raw-photo', 'rotate'];
+  const sendModeLabels = { 'global': '🌐 Global', 'card': '📷 Card', 'text': '💬 Text', 'card+text': '📷💬 Card+Text', 'media': '📷 Media', 'button-msg': '💬 Button Msg', 'carousel': '🎠 Carousel', 'quick-reply': '💊 Quick Reply', 'raw-photo': '📸 Raw Photo', 'rotate': '🔄 Rotate' };
   const contentModeOptions = ['global', 'classic', 'templates'];
   const contentModeLabels = { 'global': '🌐 Global', 'classic': '📷 Classic', 'templates': '🎴 Templates' };
 
@@ -2064,6 +2251,7 @@ function renderPageView(page, req) {
                   <option value="button-msg" ${page.sendMode === 'button-msg' ? 'selected' : ''}>💬 Button Message</option>
                   <option value="carousel" ${page.sendMode === 'carousel' ? 'selected' : ''}>🎠 Carousel</option>
                   <option value="quick-reply" ${page.sendMode === 'quick-reply' ? 'selected' : ''}>💊 Quick Reply</option>
+                  <option value="raw-photo" ${page.sendMode === 'raw-photo' ? 'selected' : ''}>📸 Raw Photo</option>
                   <option value="rotate" ${page.sendMode === 'rotate' ? 'selected' : ''}>🔄 Rotate</option>
                 </select>
               </div>
@@ -2130,6 +2318,9 @@ app.get('/', (req, res) => {
   }
   if (sel === 'quick-replies') {
     return res.send(renderHead('Quick Replies') + renderTopbar(pages, 'quick-replies') + renderQuickRepliesPage(req) + '</body></html>');
+  }
+  if (sel === 'raw-photos') {
+    return res.send(renderHead('Raw Photo Sets') + renderTopbar(pages, 'raw-photos') + renderRawPhotosPage(req) + '</body></html>');
   }
   if (sel !== 'all') {
     const page = pages.find(p => p.pageId === sel);
@@ -2917,11 +3108,12 @@ function getRotationIndex(groupName) {
 function advanceRotation(groupName) {
   const s = loadSettings();
   s.rotationIndex = s.rotationIndex || {};
-  const modes = ['card', 'media', 'button-msg', 'carousel'].filter(m => {
+  const modes = ['card', 'media', 'button-msg', 'carousel', 'raw-photo'].filter(m => {
     // Only include modes that have content
     if (m === 'media') return loadMediaTemplates().filter(t => t.active !== false).length > 0;
     if (m === 'button-msg') return loadButtonMessages().filter(t => t.active !== false).length > 0;
     if (m === 'carousel') return loadCarouselSets().filter(t => t.active !== false).length > 0;
+    if (m === 'raw-photo') return loadRawPhotoSets().filter(t => t.active !== false).length > 0;
     return true;
   });
   if (!modes.length) return 'card';
@@ -3090,7 +3282,7 @@ function renderMediaTemplatesPage(req) {
     const typeBadge = mType === 'video' ? '🎬 Video' : mType === 'gif' ? '🔄 GIF' : '📷 Image';
     const typeColor = mType === 'video' ? '#7c3aed' : mType === 'gif' ? '#0891b2' : '#f97316';
     const preview = mType === 'video'
-      ? `<div style="width:100%;aspect-ratio:16/9;background:#1a1d2e;display:flex;align-items:center;justify-content:center;position:relative;"><div style="width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;font-size:20px;color:#fff;">▶</div><span style="position:absolute;bottom:4px;left:4px;background:${typeColor};color:#fff;font-size:8px;font-weight:700;padding:2px 6px;border-radius:6px;">${typeBadge}</span></div>`
+      ? `<div style="width:100%;aspect-ratio:3/4;background:#0f172a;position:relative;overflow:hidden;"><video src="${esc(t.photo)}#t=0.1" muted preload="metadata" style="width:100%;height:100%;object-fit:cover;"></video><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;"><div style="width:40px;height:40px;border-radius:50%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;"><span style="font-size:18px;color:#fff;margin-left:3px;">▶</span></div></div><span style="position:absolute;bottom:4px;left:4px;background:${typeColor};color:#fff;font-size:8px;font-weight:700;padding:2px 6px;border-radius:6px;">${typeBadge}</span></div>`
       : `<div style="width:100%;aspect-ratio:3/4;background:#f1f5f9;position:relative;overflow:hidden;"><img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/><span style="position:absolute;bottom:4px;left:4px;background:${typeColor};color:#fff;font-size:8px;font-weight:700;padding:2px 6px;border-radius:6px;">${typeBadge}</span></div>`;
     return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${typeColor};border-radius:8px;overflow:hidden;${isActive ? '' : 'opacity:0.5;'}">
       ${preview}
@@ -3116,7 +3308,9 @@ function renderMediaTemplatesPage(req) {
       var a = items.find(function(t){ return t.active !== false; });
       if (!a) return '';
       var isVideo = a.mediaType === 'video';
-      return '<div class="card" style="border:2px solid #fed7aa;background:#fff8f0;"><h2 style="font-size:14px;color:#f97316;">👁️ Messenger Preview</h2><div style="max-width:320px;margin:8px auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);">' + (isVideo ? '<div style="width:100%;aspect-ratio:16/9;background:#0f172a;display:flex;align-items:center;justify-content:center;"><div style="width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;"><span style="font-size:28px;color:rgba(255,255,255,0.9);">▶</span></div></div>' : '<img src="' + esc(a.photo) + '" style="width:100%;display:block;" onerror="this.style.display=\'none\';"/>') + '<div style="border-top:1px solid #e5e7eb;padding:12px 0;text-align:center;"><span style="color:#3b82f6;font-size:15px;font-weight:500;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(a.buttonText || 'See My Photos') + '</span></div></div><div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Full-width, no title/subtitle — just photo + button</div></div>';
+      var mediaHtml = isVideo ? '<div style="width:100%;position:relative;"><video src="' + esc(a.photo) + '#t=0.1" muted preload="metadata" style="width:100%;display:block;"></video><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;"><div style="width:56px;height:56px;border-radius:50%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;"><span style="font-size:28px;color:#fff;margin-left:4px;">▶</span></div></div></div>' : '<img src="' + esc(a.photo) + '" style="width:100%;display:block;" onerror="this.style.display=\'none\';"/>';
+      var selector = '<div style="margin-bottom:10px;"><select id="mt-preview-sel" onchange="updateMTPreview(this.value)" style="padding:6px 10px;border:1px solid #fed7aa;border-radius:6px;font-size:12px;width:100%;">' + items.map(function(t,idx){ return '<option value="' + idx + '"' + (t===a?' selected':'') + '>#' + (idx+1) + ' — ' + (t.mediaType||'image') + ' · ' + esc(t.buttonText || 'See Photos') + '</option>'; }).join('') + '</select></div>';
+      return '<div class="card" style="border:2px solid #fed7aa;background:#fff8f0;"><h2 style="font-size:14px;color:#f97316;">👁️ Messenger Preview</h2>' + selector + '<div id="mt-preview-frame" style="max-width:320px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);">' + mediaHtml + '<div style="border-top:1px solid #e5e7eb;padding:12px 0;text-align:center;"><span style="color:#3b82f6;font-size:15px;font-weight:500;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(a.buttonText || 'See My Photos') + '</span></div></div><div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Full-width, no title/subtitle — just photo + button</div></div>';
     })()}
     <div class="card" style="border:2px solid #fed7aa;">
       <h2 id="mt-form-title">➕ Add Media Template</h2>
@@ -3148,6 +3342,8 @@ function renderMediaTemplatesPage(req) {
     </div>
     <script>
     var MT_DATA=${JSON.stringify(items)};
+    function updateMTPreview(idx){var t=MT_DATA[idx];if(!t)return;var f=document.getElementById('mt-preview-frame');if(!f)return;var isV=t.mediaType==='video';var media=isV?'<div style="width:100%;position:relative;"><video src="'+t.photo+'#t=0.1" muted preload="metadata" style="width:100%;display:block;"></video><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;"><div style="width:56px;height:56px;border-radius:50%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;"><span style="font-size:28px;color:#fff;margin-left:4px;">▶</span></div></div></div>':'<img src="'+t.photo+'" style="width:100%;display:block;"/>';f.innerHTML=media+'<div style="border-top:1px solid #e5e7eb;padding:12px 0;text-align:center;"><span style="color:#3b82f6;font-size:15px;font-weight:500;">'+escH(t.buttonText||'See My Photos')+'</span></div>';}
+    function escH(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
     function editMT(i){var t=MT_DATA[i];if(!t)return;document.getElementById('mt-form-title').textContent='✏️ Editing #'+(i+1);document.getElementById('mt-idx').value=i;document.getElementById('mt-type').value=t.mediaType||'image';document.getElementById('mt-photo').value=t.photo||'';document.getElementById('mt-btn').value=t.buttonText||'';var urls=t.redirectUrls||{};${getSetNames().map(n => "try{document.getElementById('mt-url-" + n + "').value=urls['" + n + "']||t.buttonUrl||'';}catch(e){}").join('')}document.getElementById('mt-submit').textContent='💾 Save';document.getElementById('mt-cancel').style.display='inline-block';document.getElementById('mt-form').scrollIntoView({behavior:'smooth'});}
     function resetMT(){document.getElementById('mt-form-title').textContent='➕ Add Media Template';document.getElementById('mt-idx').value='';document.getElementById('mt-type').value='image';document.getElementById('mt-photo').value='';document.getElementById('mt-btn').value='See My Photos 📸';${getSetNames().map(n => "try{document.getElementById('mt-url-" + n + "').value='';}catch(e){}").join('')}document.getElementById('mt-submit').textContent='➕ Add Media Template';document.getElementById('mt-cancel').style.display='none';}
     </script>
@@ -3180,7 +3376,8 @@ function renderButtonMessagesPage(req) {
       var a = items.find(function(t){ return t.active !== false; });
       if (!a) return '';
       var btns = (a.buttons || []).map(function(b){ return '<div style="border-top:1px solid #e5e7eb;padding:11px 0;text-align:center;"><span style="color:#3b82f6;font-size:15px;font-weight:500;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(b.title) + '</span></div>'; }).join('');
-      return '<div class="card" style="border:2px solid #fbcfe8;background:#fdf2f8;"><h2 style="font-size:14px;color:#ec4899;">👁️ Messenger Preview</h2><div style="max-width:320px;margin:8px auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);"><div style="padding:14px 16px;"><div style="font-size:15px;color:#1a1d2e;line-height:1.4;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(a.text) + '</div></div>' + btns + '</div><div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Text + clickable buttons — no image, conversational feel</div></div>';
+      var selector = '<div style="margin-bottom:10px;"><select id="bm-preview-sel" onchange="updateBMPreview(this.value)" style="padding:6px 10px;border:1px solid #fbcfe8;border-radius:6px;font-size:12px;width:100%;">' + items.map(function(t,idx){ return '<option value="' + idx + '"' + (t===a?' selected':'') + '>#' + (idx+1) + ' — ' + esc((t.text||'').slice(0,40)) + '</option>'; }).join('') + '</select></div>';
+      return '<div class="card" style="border:2px solid #fbcfe8;background:#fdf2f8;"><h2 style="font-size:14px;color:#ec4899;">👁️ Messenger Preview</h2>' + selector + '<div id="bm-preview-frame" style="max-width:320px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);"><div style="padding:14px 16px;"><div style="font-size:15px;color:#1a1d2e;line-height:1.4;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(a.text) + '</div></div>' + btns + '</div><div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Text + clickable buttons — no image, conversational feel</div></div>';
     })()}
     <div class="card" style="border:2px solid #fbcfe8;">
       <h2 id="bm-form-title">➕ Add Button Message</h2>
@@ -3207,6 +3404,8 @@ function renderButtonMessagesPage(req) {
     </div>
     <script>
     var BM_DATA=${JSON.stringify(items)};
+    function updateBMPreview(idx){var t=BM_DATA[idx];if(!t)return;var f=document.getElementById('bm-preview-frame');if(!f)return;var btns=(t.buttons||[]).map(function(b){return '<div style="border-top:1px solid #e5e7eb;padding:11px 0;text-align:center;"><span style="color:#3b82f6;font-size:15px;font-weight:500;">'+escH(b.title)+'</span></div>';}).join('');f.innerHTML='<div style="padding:14px 16px;"><div style="font-size:15px;color:#1a1d2e;line-height:1.4;">'+escH(t.text)+'</div></div>'+btns;}
+    function escH(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
     function editBM(i){var t=BM_DATA[i];if(!t)return;document.getElementById('bm-form-title').textContent='✏️ Editing #'+(i+1);document.getElementById('bm-idx').value=i;document.getElementById('bm-text').value=t.text||'';var b=t.buttons||[];document.getElementById('bm-b1t').value=b[0]?b[0].title:'';document.getElementById('bm-b1u').value=b[0]?b[0].url:'';document.getElementById('bm-b2t').value=b[1]?b[1].title:'';document.getElementById('bm-b2u').value=b[1]?b[1].url:'';document.getElementById('bm-b3t').value=b[2]?b[2].title:'';document.getElementById('bm-b3u').value=b[2]?b[2].url:'';document.getElementById('bm-submit').textContent='💾 Save';document.getElementById('bm-cancel').style.display='inline-block';document.getElementById('bm-form').scrollIntoView({behavior:'smooth'});}
     function resetBM(){document.getElementById('bm-form-title').textContent='➕ Add Button Message';document.getElementById('bm-idx').value='';document.getElementById('bm-text').value='';['bm-b1t','bm-b1u','bm-b2t','bm-b2u','bm-b3t','bm-b3u'].forEach(function(id){document.getElementById(id).value='';});document.getElementById('bm-submit').textContent='➕ Add Button Message';document.getElementById('bm-cancel').style.display='none';}
     </script>
@@ -3247,7 +3446,8 @@ function renderCarouselSetsPage(req) {
       var a = sets.find(function(s){ return s.active !== false && s.cards && s.cards.length >= 2; });
       if (!a) return '';
       var cards = (a.cards || []).map(function(c){ return '<div style="min-width:180px;max-width:180px;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);flex-shrink:0;"><div style="width:180px;height:180px;background:#f1f5f9;overflow:hidden;"><img src="' + esc(c.photo) + '" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.style.display=\'none\';"/></div><div style="padding:10px 12px;"><div style="font-weight:600;font-size:14px;color:#1a1d2e;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">' + esc(c.title) + '</div><div style="font-size:12px;color:#6b7280;margin-top:2px;">' + esc(c.subtitle || '') + '</div></div><div style="border-top:1px solid #e5e7eb;padding:10px 0;text-align:center;"><span style="color:#3b82f6;font-size:14px;font-weight:500;">' + esc(c.buttonText || 'Chat') + '</span></div></div>'; }).join('');
-      return '<div class="card" style="border:2px solid #ddd6fe;background:#faf5ff;"><h2 style="font-size:14px;color:#8b5cf6;">👁️ Messenger Preview — "' + esc(a.name) + '"</h2><div style="max-width:420px;margin:8px auto;display:flex;gap:10px;overflow-x:auto;padding:4px;">' + cards + '</div><div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Fan swipes left/right to browse — each card has its own redirect</div></div>';
+      var selector = '<div style="margin-bottom:10px;"><select id="cs-preview-sel" onchange="updateCSPreview(this.value)" style="padding:6px 10px;border:1px solid #ddd6fe;border-radius:6px;font-size:12px;width:100%;">' + sets.filter(function(s){return s.active!==false && s.cards && s.cards.length>=2;}).map(function(s,idx){ return '<option value="' + idx + '"' + (s===a?' selected':'') + '>' + esc(s.name || 'Set '+(idx+1)) + ' (' + (s.cards||[]).length + ' cards)</option>'; }).join('') + '</select></div>';
+      return '<div class="card" style="border:2px solid #ddd6fe;background:#faf5ff;"><h2 style="font-size:14px;color:#8b5cf6;">👁️ Messenger Preview</h2>' + selector + '<div id="cs-preview-frame" style="max-width:420px;margin:0 auto;display:flex;gap:10px;overflow-x:auto;padding:4px;">' + cards + '</div><div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Fan swipes left/right to browse — each card has its own redirect</div></div>';
     })()}
     <div class="card" style="border:2px solid #ddd6fe;">
       <h2 id="cs-form-title">➕ Create Carousel Set</h2>
