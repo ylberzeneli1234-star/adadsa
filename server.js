@@ -1,187 +1,3 @@
-// ============================================
-
-// ============================================
-// RAW PHOTO SETS — storage, send, render, routes
-// ============================================
-function loadRawPhotoSets() {
-  const lib = loadLibrary();
-  return Array.isArray(lib.rawPhotoSets) ? lib.rawPhotoSets : [];
-}
-function saveRawPhotoSets(items) {
-  const lib = loadLibrary();
-  lib.rawPhotoSets = items;
-  saveLibrary(lib);
-}
-
-async function sendRawPhotoCombo(page, psid, opts = {}) {
-  const items = loadRawPhotoSets().filter(t => t.active !== false);
-  if (!items.length) return sendCard(page, psid, opts);
-  const item = pickRandom(items);
-  const setName = pageSet(page);
-  // 1. Send raw photo
-  try {
-    await fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recipient: { id: psid }, message: { attachment: { type: 'image', payload: { url: item.photo, is_reusable: false } } } })
-    }).then(r => r.json()).then(data => {
-      if (data.error) trackMessage(page.pageId, false);
-      else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
-    });
-  } catch(e) { trackMessage(page.pageId, false); }
-  // 2. Follow-up after delay
-  const delay = (item.followupDelay || 1.5) * 1000;
-  await new Promise(r => setTimeout(r, delay));
-  const followupUrl = normalizeUrl((item.followupRedirects && item.followupRedirects[setName]) || item.followupUrl || page.whatsapp || '');
-  const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (followupUrl ? `&d=${encodeURIComponent(followupUrl)}` : '');
-  const followupType = item.followupType || 'button-msg';
-  if (followupType === 'card') {
-    return sendCard(page, psid, { redirect: followupUrl });
-  } else if (followupType === 'text') {
-    const text = item.followupText || 'Want to see more? 😊';
-    return sendText(page, psid, text);
-  } else {
-    // button message follow-up
-    const text = item.followupText || 'Want to see more? 😊';
-    const buttons = [{ type: 'web_url', url: trackUrl, title: item.followupButtonText || 'See Photos 📸' }];
-    return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recipient: { id: psid }, message: { attachment: { type: 'template', payload: { template_type: 'button', text, buttons } } } })
-    }).then(r => r.json()).then(data => {
-      if (data.error) trackMessage(page.pageId, false);
-      else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
-      return data;
-    }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
-  }
-}
-
-function renderRawPhotosPage(req) {
-  const items = loadRawPhotoSets();
-  const setNames = getSetNames();
-  const cards = items.map((t, i) => {
-    const isActive = t.active !== false;
-    return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #14b8a6;border-radius:8px;overflow:hidden;${isActive ? '' : 'opacity:0.5;'}">
-      <div style="width:100%;aspect-ratio:3/4;background:#f1f5f9;overflow:hidden;"><img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/></div>
-      <div style="padding:10px;">
-        <div style="font-size:11px;color:#14b8a6;font-weight:600;">Follow-up: ${esc(t.followupType || 'button-msg')}</div>
-        <div style="font-size:10px;color:#6b7280;margin-top:2px;">"${esc((t.followupText || '').slice(0, 30))}"</div>
-        <div style="font-size:10px;color:#94a3b8;margin-top:2px;">Delay: ${t.followupDelay || 1.5}s</div>
-        <div style="display:flex;gap:4px;margin-top:8px;">
-          <button type="button" class="qbtn" style="background:#6366f1;flex:1;" onclick="editRP(${i})">edit</button>
-          <a href="/raw-photo-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? 'pause' : 'on'}</a>
-          <a href="/raw-photo-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">del</a>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-
-  const activeItem = items.find(t => t.active !== false);
-  const messengerPreview = activeItem ? `
-    <div class="card" style="border:2px solid #99f6e4;background:#f0fdfa;">
-      <h2 style="font-size:14px;color:#14b8a6;">Messenger Preview</h2>
-      ${items.length > 1 ? `<select id="rp-preview-sel" onchange="updateRPPreview(this.value)" style="padding:6px 10px;border:1px solid #99f6e4;border-radius:6px;font-size:12px;width:100%;margin-bottom:10px;">${items.map((t,idx) => '<option value="' + idx + '"' + (t===activeItem?' selected':'') + '>#' + (idx+1) + ' — ' + esc((t.followupText||'').slice(0,30)) + '</option>').join('')}</select>` : ''}
-      <div id="rp-preview-frame" style="max-width:320px;margin:0 auto;">
-        <div style="border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);margin-bottom:8px;">
-          <img src="${esc(activeItem.photo)}" style="width:100%;display:block;" onerror="this.style.display='none';"/>
-        </div>
-        <div style="font-size:10px;color:#94a3b8;text-align:center;margin-bottom:6px;">${activeItem.followupDelay || 1.5}s later...</div>
-        <div style="background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);">
-          <div style="padding:12px 16px;font-size:15px;color:#1a1d2e;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">${esc(activeItem.followupText || 'Want to see more?')}</div>
-          <div style="border-top:1px solid #e5e7eb;padding:11px 0;text-align:center;"><span style="color:#3b82f6;font-size:15px;font-weight:500;">${esc(activeItem.followupButtonText || 'See Photos')}</span></div>
-        </div>
-      </div>
-      <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Raw photo first (feels like a selfie) then follow-up with button</div>
-    </div>` : '';
-
-  return `<div class="container">
-    ${renderAlerts(req)}
-    <div class="card"><h2>Raw Photo Sets</h2>
-      <p style="color:#6b7280;font-size:13px;">Raw photo (no frame, no button) + follow-up message with redirect. Two messages, feels like a conversation.</p>
-      <div style="font-size:13px;color:#14b8a6;font-weight:600;margin-top:8px;">${items.length} raw photo sets - ${items.filter(t=>t.active!==false).length} active</div>
-    </div>
-    ${messengerPreview}
-    <div class="card" style="border:2px solid #99f6e4;">
-      <h2 id="rp-form-title">Add Raw Photo Set</h2>
-      <form action="/raw-photo-add" method="POST" id="rp-form">
-        <input type="hidden" name="editIndex" id="rp-idx" value=""/>
-        <label>Photo URL</label>
-        <input name="photo" id="rp-photo" placeholder="https://i.imgur.com/xxxxx.png" required/>
-        <div class="row" style="margin-top:8px;">
-          <div><label>Follow-up Type</label>
-            <select name="followupType" id="rp-type">
-              <option value="button-msg">Button Message (text + button)</option>
-              <option value="card">Card</option>
-              <option value="text">Text Only</option>
-            </select>
-          </div>
-          <div><label>Delay (seconds)</label><input type="number" name="followupDelay" id="rp-delay" value="1.5" step="0.5" min="0.5" max="5" style="width:100px;"/></div>
-        </div>
-        <div class="row" style="margin-top:8px;">
-          <div><label>Follow-up Text</label><input name="followupText" id="rp-text" placeholder="Want to see more? 😊" value="Want to see more? 😊"/></div>
-          <div><label>Follow-up Button Text</label><input name="followupButtonText" id="rp-btn" placeholder="See Photos 📸" value="See Photos 📸"/></div>
-        </div>
-        <div style="margin-top:10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px;">
-          <div style="font-size:13px;font-weight:700;color:#0369a1;margin-bottom:8px;">Follow-up redirect URLs — per set</div>
-          ${setNames.map(name => {
-            const color = name === DEFAULT_SET ? '#3a8dde' : name === SECOND_SET ? '#f59e0b' : '#8b5cf6';
-            return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="background:' + color + ';color:#fff;font-size:11px;font-weight:700;padding:3px 10px;border-radius:5px;min-width:110px;text-align:center;">' + esc(name) + '</span><input name="followupUrl_' + esc(name) + '" id="rp-url-' + esc(name) + '" placeholder="https://..." style="flex:1;font-family:monospace;font-size:12px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/></div>';
-          }).join('')}
-        </div>
-        <div style="display:flex;gap:8px;margin-top:12px;">
-          <button type="submit" class="btn btn-green" id="rp-submit">Add Raw Photo Set</button>
-          <button type="button" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="rp-cancel" onclick="resetRP()">Cancel</button>
-        </div>
-      </form>
-    </div>
-    <div class="card">
-      <h2>Existing Raw Photo Sets (${items.length})</h2>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;">${cards || '<span style="color:#94a3b8;">None yet.</span>'}</div>
-    </div>
-    <script>
-    var RP_DATA=${JSON.stringify(items)};
-    function editRP(i){var t=RP_DATA[i];if(!t)return;document.getElementById('rp-idx').value=i;document.getElementById('rp-photo').value=t.photo||'';document.getElementById('rp-type').value=t.followupType||'button-msg';document.getElementById('rp-delay').value=t.followupDelay||1.5;document.getElementById('rp-text').value=t.followupText||'';document.getElementById('rp-btn').value=t.followupButtonText||'';var urls=t.followupRedirects||{};${setNames.map(n => "try{document.getElementById('rp-url-" + n + "').value=urls['" + n + "']||t.followupUrl||'';}catch(e){}").join('')}document.getElementById('rp-submit').textContent='Save';document.getElementById('rp-cancel').style.display='inline-block';document.getElementById('rp-form').scrollIntoView({behavior:'smooth'});}
-    function resetRP(){document.getElementById('rp-idx').value='';document.getElementById('rp-photo').value='';document.getElementById('rp-type').value='button-msg';document.getElementById('rp-delay').value='1.5';document.getElementById('rp-text').value='Want to see more?';document.getElementById('rp-btn').value='See Photos';${setNames.map(n => "try{document.getElementById('rp-url-" + n + "').value='';}catch(e){}").join('')}document.getElementById('rp-submit').textContent='Add Raw Photo Set';document.getElementById('rp-cancel').style.display='none';}
-    </script>
-  </div>`;
-}
-
-// --- Raw Photo Routes ---
-app.post('/raw-photo-add', (req, res) => {
-  const items = loadRawPhotoSets();
-  const setNames = getSetNames();
-  const followupRedirects = {};
-  let firstUrl = '';
-  setNames.forEach(name => {
-    const val = normalizeUrl(req.body['followupUrl_' + name] || '');
-    if (val) { followupRedirects[name] = val; if (!firstUrl) firstUrl = val; }
-  });
-  const entry = {
-    photo: normalizeUrl(req.body.photo),
-    followupType: req.body.followupType || 'button-msg',
-    followupDelay: parseFloat(req.body.followupDelay) || 1.5,
-    followupText: req.body.followupText || '',
-    followupButtonText: req.body.followupButtonText || 'See Photos',
-    followupUrl: firstUrl,
-    followupRedirects,
-    active: true
-  };
-  const idx = req.body.editIndex !== undefined && req.body.editIndex !== '' ? parseInt(req.body.editIndex) : -1;
-  if (idx >= 0 && items[idx]) { entry.active = items[idx].active; items[idx] = entry; }
-  else items.push(entry);
-  saveRawPhotoSets(items);
-  res.redirect('/?page=raw-photos&saved=1');
-});
-app.get('/raw-photo-toggle', (req, res) => {
-  const items = loadRawPhotoSets();
-  const idx = parseInt(req.query.index);
-  if (items[idx]) { items[idx].active = items[idx].active === false ? true : false; saveRawPhotoSets(items); }
-  res.redirect('/?page=raw-photos&saved=1');
-});
-app.get('/raw-photo-delete', (req, res) => {
-  const items = loadRawPhotoSets();
-  items.splice(parseInt(req.query.index), 1);
-  saveRawPhotoSets(items);
-  res.redirect('/?page=raw-photos&saved=1');
-});
 // messagebot — multi-tenant Facebook Messenger bot
 // One Railway service, many pages, one webhook URL
 // ============================================
@@ -3726,6 +3542,190 @@ app.get("/quick-reply-remove-text", (req, res) => {
   if (idx >= 0) s.quickReplyTexts.splice(idx, 1);
   saveSettings(s);
   res.redirect("/?page=quick-replies&saved=1");
+});
+// ============================================
+
+// ============================================
+// RAW PHOTO SETS — storage, send, render, routes
+// ============================================
+function loadRawPhotoSets() {
+  const lib = loadLibrary();
+  return Array.isArray(lib.rawPhotoSets) ? lib.rawPhotoSets : [];
+}
+function saveRawPhotoSets(items) {
+  const lib = loadLibrary();
+  lib.rawPhotoSets = items;
+  saveLibrary(lib);
+}
+
+async function sendRawPhotoCombo(page, psid, opts = {}) {
+  const items = loadRawPhotoSets().filter(t => t.active !== false);
+  if (!items.length) return sendCard(page, psid, opts);
+  const item = pickRandom(items);
+  const setName = pageSet(page);
+  // 1. Send raw photo
+  try {
+    await fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipient: { id: psid }, message: { attachment: { type: 'image', payload: { url: item.photo, is_reusable: false } } } })
+    }).then(r => r.json()).then(data => {
+      if (data.error) trackMessage(page.pageId, false);
+      else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+    });
+  } catch(e) { trackMessage(page.pageId, false); }
+  // 2. Follow-up after delay
+  const delay = (item.followupDelay || 1.5) * 1000;
+  await new Promise(r => setTimeout(r, delay));
+  const followupUrl = normalizeUrl((item.followupRedirects && item.followupRedirects[setName]) || item.followupUrl || page.whatsapp || '');
+  const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (followupUrl ? `&d=${encodeURIComponent(followupUrl)}` : '');
+  const followupType = item.followupType || 'button-msg';
+  if (followupType === 'card') {
+    return sendCard(page, psid, { redirect: followupUrl });
+  } else if (followupType === 'text') {
+    const text = item.followupText || 'Want to see more? 😊';
+    return sendText(page, psid, text);
+  } else {
+    // button message follow-up
+    const text = item.followupText || 'Want to see more? 😊';
+    const buttons = [{ type: 'web_url', url: trackUrl, title: item.followupButtonText || 'See Photos 📸' }];
+    return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipient: { id: psid }, message: { attachment: { type: 'template', payload: { template_type: 'button', text, buttons } } } })
+    }).then(r => r.json()).then(data => {
+      if (data.error) trackMessage(page.pageId, false);
+      else { trackMessage(page.pageId, true); clearFailuresForFan(page.pageId, psid); }
+      return data;
+    }).catch(err => { trackMessage(page.pageId, false); return { error: { message: err.message } }; });
+  }
+}
+
+function renderRawPhotosPage(req) {
+  const items = loadRawPhotoSets();
+  const setNames = getSetNames();
+  const cards = items.map((t, i) => {
+    const isActive = t.active !== false;
+    return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #14b8a6;border-radius:8px;overflow:hidden;${isActive ? '' : 'opacity:0.5;'}">
+      <div style="width:100%;aspect-ratio:3/4;background:#f1f5f9;overflow:hidden;"><img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/></div>
+      <div style="padding:10px;">
+        <div style="font-size:11px;color:#14b8a6;font-weight:600;">Follow-up: ${esc(t.followupType || 'button-msg')}</div>
+        <div style="font-size:10px;color:#6b7280;margin-top:2px;">"${esc((t.followupText || '').slice(0, 30))}"</div>
+        <div style="font-size:10px;color:#94a3b8;margin-top:2px;">Delay: ${t.followupDelay || 1.5}s</div>
+        <div style="display:flex;gap:4px;margin-top:8px;">
+          <button type="button" class="qbtn" style="background:#6366f1;flex:1;" onclick="editRP(${i})">edit</button>
+          <a href="/raw-photo-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? 'pause' : 'on'}</a>
+          <a href="/raw-photo-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">del</a>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const activeItem = items.find(t => t.active !== false);
+  const messengerPreview = activeItem ? `
+    <div class="card" style="border:2px solid #99f6e4;background:#f0fdfa;">
+      <h2 style="font-size:14px;color:#14b8a6;">Messenger Preview</h2>
+      ${items.length > 1 ? `<select id="rp-preview-sel" onchange="updateRPPreview(this.value)" style="padding:6px 10px;border:1px solid #99f6e4;border-radius:6px;font-size:12px;width:100%;margin-bottom:10px;">${items.map((t,idx) => '<option value="' + idx + '"' + (t===activeItem?' selected':'') + '>#' + (idx+1) + ' — ' + esc((t.followupText||'').slice(0,30)) + '</option>').join('')}</select>` : ''}
+      <div id="rp-preview-frame" style="max-width:320px;margin:0 auto;">
+        <div style="border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);margin-bottom:8px;">
+          <img src="${esc(activeItem.photo)}" style="width:100%;display:block;" onerror="this.style.display='none';"/>
+        </div>
+        <div style="font-size:10px;color:#94a3b8;text-align:center;margin-bottom:6px;">${activeItem.followupDelay || 1.5}s later...</div>
+        <div style="background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);">
+          <div style="padding:12px 16px;font-size:15px;color:#1a1d2e;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;">${esc(activeItem.followupText || 'Want to see more?')}</div>
+          <div style="border-top:1px solid #e5e7eb;padding:11px 0;text-align:center;"><span style="color:#3b82f6;font-size:15px;font-weight:500;">${esc(activeItem.followupButtonText || 'See Photos')}</span></div>
+        </div>
+      </div>
+      <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">Raw photo first (feels like a selfie) then follow-up with button</div>
+    </div>` : '';
+
+  return `<div class="container">
+    ${renderAlerts(req)}
+    <div class="card"><h2>Raw Photo Sets</h2>
+      <p style="color:#6b7280;font-size:13px;">Raw photo (no frame, no button) + follow-up message with redirect. Two messages, feels like a conversation.</p>
+      <div style="font-size:13px;color:#14b8a6;font-weight:600;margin-top:8px;">${items.length} raw photo sets - ${items.filter(t=>t.active!==false).length} active</div>
+    </div>
+    ${messengerPreview}
+    <div class="card" style="border:2px solid #99f6e4;">
+      <h2 id="rp-form-title">Add Raw Photo Set</h2>
+      <form action="/raw-photo-add" method="POST" id="rp-form">
+        <input type="hidden" name="editIndex" id="rp-idx" value=""/>
+        <label>Photo URL</label>
+        <input name="photo" id="rp-photo" placeholder="https://i.imgur.com/xxxxx.png" required/>
+        <div class="row" style="margin-top:8px;">
+          <div><label>Follow-up Type</label>
+            <select name="followupType" id="rp-type">
+              <option value="button-msg">Button Message (text + button)</option>
+              <option value="card">Card</option>
+              <option value="text">Text Only</option>
+            </select>
+          </div>
+          <div><label>Delay (seconds)</label><input type="number" name="followupDelay" id="rp-delay" value="1.5" step="0.5" min="0.5" max="5" style="width:100px;"/></div>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <div><label>Follow-up Text</label><input name="followupText" id="rp-text" placeholder="Want to see more? 😊" value="Want to see more? 😊"/></div>
+          <div><label>Follow-up Button Text</label><input name="followupButtonText" id="rp-btn" placeholder="See Photos 📸" value="See Photos 📸"/></div>
+        </div>
+        <div style="margin-top:10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px;">
+          <div style="font-size:13px;font-weight:700;color:#0369a1;margin-bottom:8px;">Follow-up redirect URLs — per set</div>
+          ${setNames.map(name => {
+            const color = name === DEFAULT_SET ? '#3a8dde' : name === SECOND_SET ? '#f59e0b' : '#8b5cf6';
+            return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="background:' + color + ';color:#fff;font-size:11px;font-weight:700;padding:3px 10px;border-radius:5px;min-width:110px;text-align:center;">' + esc(name) + '</span><input name="followupUrl_' + esc(name) + '" id="rp-url-' + esc(name) + '" placeholder="https://..." style="flex:1;font-family:monospace;font-size:12px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/></div>';
+          }).join('')}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button type="submit" class="btn btn-green" id="rp-submit">Add Raw Photo Set</button>
+          <button type="button" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="rp-cancel" onclick="resetRP()">Cancel</button>
+        </div>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Existing Raw Photo Sets (${items.length})</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;">${cards || '<span style="color:#94a3b8;">None yet.</span>'}</div>
+    </div>
+    <script>
+    var RP_DATA=${JSON.stringify(items)};
+    function editRP(i){var t=RP_DATA[i];if(!t)return;document.getElementById('rp-idx').value=i;document.getElementById('rp-photo').value=t.photo||'';document.getElementById('rp-type').value=t.followupType||'button-msg';document.getElementById('rp-delay').value=t.followupDelay||1.5;document.getElementById('rp-text').value=t.followupText||'';document.getElementById('rp-btn').value=t.followupButtonText||'';var urls=t.followupRedirects||{};${setNames.map(n => "try{document.getElementById('rp-url-" + n + "').value=urls['" + n + "']||t.followupUrl||'';}catch(e){}").join('')}document.getElementById('rp-submit').textContent='Save';document.getElementById('rp-cancel').style.display='inline-block';document.getElementById('rp-form').scrollIntoView({behavior:'smooth'});}
+    function resetRP(){document.getElementById('rp-idx').value='';document.getElementById('rp-photo').value='';document.getElementById('rp-type').value='button-msg';document.getElementById('rp-delay').value='1.5';document.getElementById('rp-text').value='Want to see more?';document.getElementById('rp-btn').value='See Photos';${setNames.map(n => "try{document.getElementById('rp-url-" + n + "').value='';}catch(e){}").join('')}document.getElementById('rp-submit').textContent='Add Raw Photo Set';document.getElementById('rp-cancel').style.display='none';}
+    </script>
+  </div>`;
+}
+
+// --- Raw Photo Routes ---
+app.post('/raw-photo-add', (req, res) => {
+  const items = loadRawPhotoSets();
+  const setNames = getSetNames();
+  const followupRedirects = {};
+  let firstUrl = '';
+  setNames.forEach(name => {
+    const val = normalizeUrl(req.body['followupUrl_' + name] || '');
+    if (val) { followupRedirects[name] = val; if (!firstUrl) firstUrl = val; }
+  });
+  const entry = {
+    photo: normalizeUrl(req.body.photo),
+    followupType: req.body.followupType || 'button-msg',
+    followupDelay: parseFloat(req.body.followupDelay) || 1.5,
+    followupText: req.body.followupText || '',
+    followupButtonText: req.body.followupButtonText || 'See Photos',
+    followupUrl: firstUrl,
+    followupRedirects,
+    active: true
+  };
+  const idx = req.body.editIndex !== undefined && req.body.editIndex !== '' ? parseInt(req.body.editIndex) : -1;
+  if (idx >= 0 && items[idx]) { entry.active = items[idx].active; items[idx] = entry; }
+  else items.push(entry);
+  saveRawPhotoSets(items);
+  res.redirect('/?page=raw-photos&saved=1');
+});
+app.get('/raw-photo-toggle', (req, res) => {
+  const items = loadRawPhotoSets();
+  const idx = parseInt(req.query.index);
+  if (items[idx]) { items[idx].active = items[idx].active === false ? true : false; saveRawPhotoSets(items); }
+  res.redirect('/?page=raw-photos&saved=1');
+});
+app.get('/raw-photo-delete', (req, res) => {
+  const items = loadRawPhotoSets();
+  items.splice(parseInt(req.query.index), 1);
+  saveRawPhotoSets(items);
+  res.redirect('/?page=raw-photos&saved=1');
 });
 // ============================================
 cron.schedule('* * * * *', () => {
