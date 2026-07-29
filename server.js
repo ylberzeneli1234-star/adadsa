@@ -988,6 +988,17 @@ app.post('/webhook', (req, res) => {
                 body: JSON.stringify({ recipient: { id: psid }, message: { attachment: { type: 'template', payload: { template_type: 'media', elements: [{ media_type: fbMediaType, attachment_id: attachmentId, buttons: [{ type: 'web_url', url: trackUrl, title: btn.payoffButtonText || 'Open' }] }] } } } })
               }).then(r => r.json()).then(d => { if (!d.error) trackMessage(page.pageId, true); });
             } else { sendCard(page, psid, { redirect: redirectUrl }); }
+          } else if (btn.payoffType === 'button-msg') {
+            sendButtonTemplateMsg(page, psid);
+          } else if (btn.payoffType === 'carousel') {
+            sendCarouselMsg(page, psid);
+          } else if (btn.payoffType === 'raw-photo') {
+            sendRawPhotoCombo(page, psid);
+          } else if (btn.payoffType === 'teaser') {
+            sendTeaserCard(page, psid);
+          } else if (btn.payoffType === 'text') {
+            const pool = (loadLibrary().textPool || []);
+            if (pool.length) sendText(page, psid, pool[Math.floor(Math.random() * pool.length)]);
           } else {
             sendCard(page, psid, { redirect: redirectUrl });
           }
