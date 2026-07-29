@@ -999,6 +999,9 @@ app.post('/webhook', (req, res) => {
         const fmt = qr ? qr.replyFormat : 'card';
         if (fmt === 'media') sendMediaTemplateMsg(page, psid);
         else if (fmt === 'button-msg') sendButtonTemplateMsg(page, psid);
+        else if (fmt === 'carousel') sendCarouselMsg(page, psid);
+        else if (fmt === 'raw-photo') sendRawPhotoCombo(page, psid);
+        else if (fmt === 'teaser') sendTeaserCard(page, psid);
         else if (fmt === 'text') { const pool = (loadLibrary().textPool || []); if (pool.length) sendText(page, psid, pool[Math.floor(Math.random() * pool.length)]); }
         else sendCard(page, psid);
       } else if (event.message && isNewFan) {
@@ -3396,10 +3399,13 @@ function renderQuickRepliesPage(req) {
           <div><label>Pill Label</label><input name="label" id="qr-pill-label" placeholder="Chat" required/></div>
           <div><label>When tapped, reply with</label>
             <select name="replyFormat" id="qr-pill-format">
-              <option value="card">Card</option>
-              <option value="media">Media Template</option>
-              <option value="text">Text</option>
-              <option value="button-msg">Button Message</option>
+              <option value="card">📷 Card</option>
+              <option value="media">📷 Media Template</option>
+              <option value="text">💬 Text</option>
+              <option value="button-msg">💬 Button Message</option>
+              <option value="carousel">🎠 Carousel</option>
+              <option value="raw-photo">📸 Raw Photo</option>
+              <option value="teaser">🎭 Teaser Card</option>
             </select>
           </div>
         </div>
