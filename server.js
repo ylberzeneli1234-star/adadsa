@@ -1974,6 +1974,7 @@ function renderPageView(page, req) {
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
             <form action="/send-now-page" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="qbtn" style="background:#16a34a;padding:7px 14px;" onclick="return confirm('Send Now to ${fans.length} fans?')">📣 Send Now</button></form>
             <form action="/randomize-and-send?page=${pid}" method="POST" style="margin:0;"><button type="submit" class="qbtn" style="background:#7c3aed;padding:7px 14px;" onclick="return confirm('Randomize + Send?')">🎲🚀 Rand+Send</button></form>
+            <form action="/randomize-page?page=${pid}" method="POST" style="margin:0;"><button type="submit" class="qbtn" style="background:#8b5cf6;padding:7px 14px;">🎲 Random</button></form>
             <form action="/${page.broadcastEnabled ? 'pause' : 'resume'}-page" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="qbtn" style="background:${page.broadcastEnabled ? '#f59e0b' : '#28a745'};padding:7px 14px;">${page.broadcastEnabled ? '⏸ Pause Auto' : '▶ Resume Auto'}</button></form>
             <form action="/clear-fans" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="qbtn" style="background:#dc3545;padding:7px 14px;" onclick="return confirm('Clear ALL fans?')">🗑️ Fans</button></form>
             <form action="/reset-stats" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="qbtn" style="background:#dc3545;padding:7px 14px;" onclick="return confirm('Reset stats?')">🗑️ Stats</button></form>
@@ -2018,6 +2019,9 @@ function renderPageView(page, req) {
             <input type="hidden" name="pageId" value="${pid}"/>
             <div class="row">
               <div><label>Label</label><input name="label" value="${esc(page.label)}"/></div>
+              <div><label>Access Token</label><input name="accessToken" value="${esc(page.accessToken)}" style="font-family:monospace;font-size:11px;"/></div>
+            </div>
+            <div class="row">
               <div><label>Group</label>
                 <select name="group"><option value="">(No group)</option>${groups.map(g => `<option value="${esc(g)}" ${page.group === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}</select>
               </div>
@@ -2153,6 +2157,7 @@ app.post('/update-page', (req, res) => {
   const updates = {
     label: b.label, title: b.title, subtitle: b.subtitle,
     buttonText: b.buttonText, whatsapp: normalizeUrl(b.whatsapp),
+    accessToken: b.accessToken || undefined,
     broadcastTime: b.broadcastTime,
     spacingSeconds: parseInt(b.spacingSeconds) || 10,
     cleanupThreshold: parseInt(b.cleanupThreshold) || 0,
@@ -2971,7 +2976,8 @@ async function sendMediaTemplateMsg(page, psid, opts = {}) {
   const mediaType = item.mediaType || 'image';
   const attachmentId = await uploadMediaAttachment(page, item.photo, mediaType);
   if (!attachmentId) return sendCard(page, psid, opts);
-  const rawDest = normalizeUrl(item.buttonUrl || page.whatsapp || '');
+  const setName = pageSet(page);
+  const rawDest = normalizeUrl((item.redirectUrls && item.redirectUrls[setName]) || item.buttonUrl || page.whatsapp || '');
   const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
   const fbMediaType = mediaType === 'video' ? 'video' : 'image'; // FB API uses 'image' for both image and GIF
   return fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${page.accessToken}`, {
@@ -2996,8 +3002,9 @@ function sendButtonTemplateMsg(page, psid, opts = {}) {
   const items = loadButtonMessages().filter(t => t.active !== false);
   if (!items.length) return sendCard(page, psid, opts);
   const item = pickRandom(items);
+  const setName = pageSet(page);
   const buttons = (item.buttons || []).slice(0, 3).map(b => {
-    const rawDest = normalizeUrl(b.url || page.whatsapp || '');
+    const rawDest = normalizeUrl((b.redirectUrls && b.redirectUrls[setName]) || b.url || page.whatsapp || '');
     const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
     return { type: 'web_url', url: trackUrl, title: b.title || 'Click' };
   });
@@ -3022,8 +3029,9 @@ function sendCarouselMsg(page, psid, opts = {}) {
   const sets = loadCarouselSets().filter(t => t.active !== false);
   if (!sets.length) return sendCard(page, psid, opts);
   const set = pickRandom(sets);
+  const setName = pageSet(page);
   const elements = (set.cards || []).map(card => {
-    const rawDest = normalizeUrl(card.redirect || page.whatsapp || '');
+    const rawDest = normalizeUrl((card.redirectUrls && card.redirectUrls[setName]) || card.redirect || page.whatsapp || '');
     const trackUrl = `${PUBLIC_URL}/track?psid=${psid}&pageId=${page.pageId}` + (rawDest ? `&d=${encodeURIComponent(rawDest)}` : '');
     return {
       title: card.title || 'Chat', subtitle: card.subtitle || '',
@@ -3120,7 +3128,13 @@ function renderMediaTemplatesPage(req) {
         </div>
         <div class="row" style="margin-top:8px;">
           <div><label>Button Text</label><input name="buttonText" id="mt-btn" placeholder="See My Photos 📸" value="See My Photos 📸"/></div>
-          <div><label>Button URL (redirect)</label><input name="buttonUrl" id="mt-url" placeholder="https://scrollgallery.com/?p=..." required/></div>
+        </div>
+        <div style="margin-top:10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px;">
+          <div style="font-size:13px;font-weight:700;color:#0369a1;margin-bottom:8px;">🔗 Redirect URLs — one per set</div>
+          ${getSetNames().map(name => {
+            const color = name === DEFAULT_SET ? '#3a8dde' : name === SECOND_SET ? '#f59e0b' : '#8b5cf6';
+            return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="background:' + color + ';color:#fff;font-size:11px;font-weight:700;padding:3px 10px;border-radius:5px;white-space:nowrap;min-width:110px;text-align:center;">' + esc(name) + '</span><input name="redirectUrl_' + esc(name) + '" id="mt-url-' + esc(name) + '" placeholder="https://..." style="flex:1;font-family:monospace;font-size:12px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;"/></div>';
+          }).join('')}
         </div>
         <div style="display:flex;gap:8px;margin-top:12px;">
           <button type="submit" class="btn btn-green" id="mt-submit">➕ Add Media Template</button>
@@ -3134,8 +3148,8 @@ function renderMediaTemplatesPage(req) {
     </div>
     <script>
     var MT_DATA=${JSON.stringify(items)};
-    function editMT(i){var t=MT_DATA[i];if(!t)return;document.getElementById('mt-form-title').textContent='✏️ Editing #'+(i+1);document.getElementById('mt-idx').value=i;document.getElementById('mt-type').value=t.mediaType||'image';document.getElementById('mt-photo').value=t.photo||'';document.getElementById('mt-btn').value=t.buttonText||'';document.getElementById('mt-url').value=t.buttonUrl||'';document.getElementById('mt-submit').textContent='💾 Save';document.getElementById('mt-cancel').style.display='inline-block';document.getElementById('mt-form').scrollIntoView({behavior:'smooth'});}
-    function resetMT(){document.getElementById('mt-form-title').textContent='➕ Add Media Template';document.getElementById('mt-idx').value='';document.getElementById('mt-type').value='image';document.getElementById('mt-photo').value='';document.getElementById('mt-btn').value='See My Photos 📸';document.getElementById('mt-url').value='';document.getElementById('mt-submit').textContent='➕ Add Media Template';document.getElementById('mt-cancel').style.display='none';}
+    function editMT(i){var t=MT_DATA[i];if(!t)return;document.getElementById('mt-form-title').textContent='✏️ Editing #'+(i+1);document.getElementById('mt-idx').value=i;document.getElementById('mt-type').value=t.mediaType||'image';document.getElementById('mt-photo').value=t.photo||'';document.getElementById('mt-btn').value=t.buttonText||'';var urls=t.redirectUrls||{};${getSetNames().map(n => "try{document.getElementById('mt-url-" + n + "').value=urls['" + n + "']||t.buttonUrl||'';}catch(e){}").join('')}document.getElementById('mt-submit').textContent='💾 Save';document.getElementById('mt-cancel').style.display='inline-block';document.getElementById('mt-form').scrollIntoView({behavior:'smooth'});}
+    function resetMT(){document.getElementById('mt-form-title').textContent='➕ Add Media Template';document.getElementById('mt-idx').value='';document.getElementById('mt-type').value='image';document.getElementById('mt-photo').value='';document.getElementById('mt-btn').value='See My Photos 📸';${getSetNames().map(n => "try{document.getElementById('mt-url-" + n + "').value='';}catch(e){}").join('')}document.getElementById('mt-submit').textContent='➕ Add Media Template';document.getElementById('mt-cancel').style.display='none';}
     </script>
   </div>`;
 }
@@ -3175,10 +3189,11 @@ function renderButtonMessagesPage(req) {
         <label>Message Text</label>
         <textarea name="text" id="bm-text" placeholder="Hey, I just uploaded new photos... want to see them? 😊" required></textarea>
         <div style="margin-top:12px;background:#fdf2f8;border:1px solid #fbcfe8;border-radius:8px;padding:12px;">
-          <div style="font-size:13px;font-weight:600;color:#be185d;margin-bottom:8px;">Buttons (up to 3)</div>
-          <div class="row"><div><label>Button 1 Title</label><input name="btn1Title" id="bm-b1t" placeholder="See My Photos 📸" required/></div><div><label>Button 1 URL</label><input name="btn1Url" id="bm-b1u" placeholder="https://..." required/></div></div>
-          <div class="row" style="margin-top:6px;"><div><label>Button 2 Title</label><input name="btn2Title" id="bm-b2t" placeholder="WhatsApp 💬"/></div><div><label>Button 2 URL</label><input name="btn2Url" id="bm-b2u"/></div></div>
-          <div class="row" style="margin-top:6px;"><div><label>Button 3 Title</label><input name="btn3Title" id="bm-b3t"/></div><div><label>Button 3 URL</label><input name="btn3Url" id="bm-b3u"/></div></div>
+          <div style="font-size:13px;font-weight:600;color:#be185d;margin-bottom:8px;">Buttons (up to 3) — add URL per redirect set</div>
+          ${[1,2,3].map(n => {
+            const req_attr = n === 1 ? ' required' : '';
+            return '<div style="border:1px solid #fce7f3;border-radius:8px;padding:10px;margin-bottom:8px;background:#fff;"><div style="font-size:12px;font-weight:600;color:#ec4899;margin-bottom:4px;">Button ' + n + (n > 1 ? ' (optional)' : '') + '</div><div><label>Title</label><input name="btn' + n + 'Title" id="bm-b' + n + 't" placeholder="' + (n===1?'See My Photos':'') + '"' + req_attr + '/></div><div style="margin-top:6px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:8px;">' + getSetNames().map(function(name) { var color = name === DEFAULT_SET ? '#3a8dde' : name === SECOND_SET ? '#f59e0b' : '#8b5cf6'; return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="background:' + color + ';color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;min-width:90px;text-align:center;">' + esc(name) + '</span><input name="btn' + n + 'Url_' + esc(name) + '" id="bm-b' + n + 'u-' + esc(name) + '" placeholder="https://..." style="flex:1;font-family:monospace;font-size:11px;padding:6px;border:1px solid #cbd5e1;border-radius:4px;"/></div>'; }).join('') + '</div></div>';
+          }).join('')}
         </div>
         <div style="display:flex;gap:8px;margin-top:12px;">
           <button type="submit" class="btn btn-green" id="bm-submit">➕ Add Button Message</button>
@@ -3245,7 +3260,12 @@ function renderCarouselSetsPage(req) {
             <div style="font-size:12px;font-weight:600;color:#8b5cf6;margin-bottom:6px;">Card ${n} ${n > 2 ? '(optional)' : ''}</div>
             <div class="row"><div><label>Name</label><input name="card${n}Title" id="cs-c${n}t" placeholder="Jessica 35" ${n <= 2 ? 'required' : ''}/></div><div><label>Subtitle</label><input name="card${n}Subtitle" id="cs-c${n}s"/></div></div>
             <div class="row" style="margin-top:4px;"><div><label>Photo URL</label><input name="card${n}Photo" id="cs-c${n}p" ${n <= 2 ? 'required' : ''}/></div><div><label>Button Text</label><input name="card${n}Button" id="cs-c${n}b" value="Chat Now"/></div></div>
-            <label style="margin-top:4px;">Redirect URL</label><input name="card${n}Redirect" id="cs-c${n}r" ${n <= 2 ? 'required' : ''}/>
+            <div style="margin-top:6px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:6px;">
+            ${getSetNames().map(name => {
+              const color = name === DEFAULT_SET ? '#3a8dde' : name === SECOND_SET ? '#f59e0b' : '#8b5cf6';
+              return '<div style="display:flex;align-items:center;gap:4px;margin-bottom:3px;"><span style="background:' + color + ';color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;min-width:80px;text-align:center;">' + esc(name) + '</span><input name="card' + n + 'Redirect_' + esc(name) + '" id="cs-c' + n + 'r-' + esc(name) + '" placeholder="https://..." style="flex:1;font-size:11px;padding:5px;border:1px solid #cbd5e1;border-radius:4px;"/></div>';
+            }).join('')}
+            </div>
           </div>`).join('')}
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;">
@@ -3279,6 +3299,7 @@ function renderQuickRepliesPage(req) {
       <div style="background:#06b6d4;color:#fff;font-size:13px;font-weight:500;padding:5px 14px;border-radius:20px;">${esc(q.label)}</div>
       <div style="flex:1;font-size:11px;color:#6b7280;">replies with: <strong>${esc(q.replyFormat || 'card')}</strong></div>
       <a href="/quick-reply-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? 'pause' : 'on'}</a>
+      <button type="button" class="qbtn" style="background:#6366f1;" onclick="editQR(${i})">edit</button>
       <a href="/quick-reply-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">x</a>
     </div>`;
   }).join('');
@@ -3305,21 +3326,26 @@ function renderQuickRepliesPage(req) {
       <h2>Message Text Pool</h2>
       <p style="color:#6b7280;font-size:12px;">Random text picked from this pool appears above the pills.</p>
       <div style="margin-bottom:10px;">
-        ${qrTexts.map((t, i) => '<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;margin-bottom:4px;"><span style="flex:1;font-size:13px;color:#1a1d2e;">' + esc(t) + '</span><a href="/quick-reply-remove-text?index=' + i + '" onclick="return confirm(\\\"Remove?\\\")" style="color:#dc2626;text-decoration:none;font-weight:700;">x</a></div>').join('') || '<span style="color:#94a3b8;font-size:12px;">No messages yet.</span>'}
+        ${qrTexts.map((t, i) => '<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;margin-bottom:4px;"><span style="flex:1;font-size:13px;color:#1a1d2e;">' + esc(t) + '</span><button type="button" class="qbtn" style="background:#6366f1;font-size:10px;padding:3px 8px;" onclick="editQRText(' + i + ')">edit</button><a href="/quick-reply-remove-text?index=' + i + '" onclick="return confirm(\\\"Remove?\\\")" style="color:#dc2626;text-decoration:none;font-weight:700;">x</a></div>').join('') || '<span style="color:#94a3b8;font-size:12px;">No messages yet.</span>'}
       </div>
       <form action="/quick-reply-add-text" method="POST">
-        <textarea name="texts" placeholder="Hey gorgeous, wanna chat?" style="min-height:80px;"></textarea>
-        <button type="submit" class="btn btn-green" style="margin-top:8px;">+ Add Messages</button>
+        <input type="hidden" name="editTextIndex" id="qr-text-idx" value=""/>
+        <textarea name="texts" id="qr-text-input" placeholder="Hey gorgeous, wanna chat?" style="min-height:80px;"></textarea>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button type="submit" class="btn btn-green" id="qr-text-submit">+ Add Messages</button>
+          <button type="button" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="qr-text-cancel" onclick="resetQRText()">Cancel</button>
+        </div>
       </form>
     </div>
     <div class="card" style="border:2px solid #a5f3fc;">
       <h2>Pills (buttons fans can tap)</h2>
       <div style="display:grid;gap:8px;margin-bottom:14px;">${chips || '<span style="color:#94a3b8;">None yet.</span>'}</div>
-      <form action="/quick-reply-add" method="POST" style="background:#ecfeff;border:1px solid #a5f3fc;border-radius:8px;padding:12px;">
+      <form action="/quick-reply-add" method="POST" id="qr-pill-form" style="background:#ecfeff;border:1px solid #a5f3fc;border-radius:8px;padding:12px;">
+        <input type="hidden" name="editIndex" id="qr-pill-idx" value=""/>
         <div class="row">
-          <div><label>Pill Label</label><input name="label" placeholder="Chat" required/></div>
+          <div><label>Pill Label</label><input name="label" id="qr-pill-label" placeholder="Chat" required/></div>
           <div><label>When tapped, reply with</label>
-            <select name="replyFormat">
+            <select name="replyFormat" id="qr-pill-format">
               <option value="card">Card</option>
               <option value="media">Media Template</option>
               <option value="text">Text</option>
@@ -3327,9 +3353,20 @@ function renderQuickRepliesPage(req) {
             </select>
           </div>
         </div>
-        <button type="submit" class="btn btn-green" style="margin-top:8px;">+ Add Pill</button>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button type="submit" class="btn btn-green" id="qr-pill-submit">+ Add Pill</button>
+          <button type="button" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="qr-pill-cancel" onclick="resetQRPill()">Cancel</button>
+        </div>
       </form>
     </div>
+    <script>
+    var QR_PILLS=${JSON.stringify(items)};
+    var QR_TEXTS=${JSON.stringify(qrTexts)};
+    function editQR(i){var q=QR_PILLS[i];if(!q)return;document.getElementById('qr-pill-idx').value=i;document.getElementById('qr-pill-label').value=q.label||'';document.getElementById('qr-pill-format').value=q.replyFormat||'card';document.getElementById('qr-pill-submit').textContent='Save Pill';document.getElementById('qr-pill-cancel').style.display='inline-block';document.getElementById('qr-pill-form').scrollIntoView({behavior:'smooth'});}
+    function resetQRPill(){document.getElementById('qr-pill-idx').value='';document.getElementById('qr-pill-label').value='';document.getElementById('qr-pill-format').value='card';document.getElementById('qr-pill-submit').textContent='+ Add Pill';document.getElementById('qr-pill-cancel').style.display='none';}
+    function editQRText(i){var t=QR_TEXTS[i];if(t===undefined)return;document.getElementById('qr-text-idx').value=i;document.getElementById('qr-text-input').value=t;document.getElementById('qr-text-submit').textContent='Save Text';document.getElementById('qr-text-cancel').style.display='inline-block';document.getElementById('qr-text-input').scrollIntoView({behavior:'smooth'});}
+    function resetQRText(){document.getElementById('qr-text-idx').value='';document.getElementById('qr-text-input').value='';document.getElementById('qr-text-submit').textContent='+ Add Messages';document.getElementById('qr-text-cancel').style.display='none';}
+    </script>
   </div>`;
 }
 
@@ -3345,7 +3382,14 @@ function renderQuickRepliesPage(req) {
 app.post('/media-template-add', (req, res) => {
   const items = loadMediaTemplates();
   const mediaType = req.body.mediaType || 'image';
-  const entry = { photo: normalizeUrl(req.body.photo), mediaType, buttonText: req.body.buttonText || 'See My Photos', buttonUrl: normalizeUrl(req.body.buttonUrl), active: true };
+  const setNames = getSetNames();
+  const redirectUrls = {};
+  let firstUrl = '';
+  setNames.forEach(name => {
+    const val = normalizeUrl(req.body['redirectUrl_' + name] || '');
+    if (val) { redirectUrls[name] = val; if (!firstUrl) firstUrl = val; }
+  });
+  const entry = { photo: normalizeUrl(req.body.photo), mediaType, buttonText: req.body.buttonText || 'See My Photos', buttonUrl: firstUrl, redirectUrls, active: true };
   const idx = req.body.editIndex !== undefined && req.body.editIndex !== '' ? parseInt(req.body.editIndex) : -1;
   if (idx >= 0 && items[idx]) { entry.active = items[idx].active; items[idx] = entry; }
   else items.push(entry);
@@ -3368,10 +3412,19 @@ app.get('/media-template-delete', (req, res) => {
 // --- Button Messages ---
 app.post('/button-message-add', (req, res) => {
   const items = loadButtonMessages();
+  const setNames = getSetNames();
   const buttons = [];
-  if (req.body.btn1Title && req.body.btn1Url) buttons.push({ title: req.body.btn1Title, url: normalizeUrl(req.body.btn1Url) });
-  if (req.body.btn2Title && req.body.btn2Url) buttons.push({ title: req.body.btn2Title, url: normalizeUrl(req.body.btn2Url) });
-  if (req.body.btn3Title && req.body.btn3Url) buttons.push({ title: req.body.btn3Title, url: normalizeUrl(req.body.btn3Url) });
+  for (let n = 1; n <= 3; n++) {
+    const title = (req.body['btn' + n + 'Title'] || '').trim();
+    if (!title) continue;
+    const redirectUrls = {};
+    let firstUrl = '';
+    setNames.forEach(name => {
+      const val = normalizeUrl(req.body['btn' + n + 'Url_' + name] || '');
+      if (val) { redirectUrls[name] = val; if (!firstUrl) firstUrl = val; }
+    });
+    buttons.push({ title, url: firstUrl, redirectUrls });
+  }
   const idx = req.body.editIndex !== undefined && req.body.editIndex !== '' ? parseInt(req.body.editIndex) : -1;
   if (idx >= 0 && items[idx]) { items[idx].text = req.body.text; items[idx].buttons = buttons; }
   else items.push({ id: 'bm_' + Date.now(), text: req.body.text, buttons, active: true });
@@ -3402,7 +3455,8 @@ app.post('/carousel-set-add', (req, res) => {
     cards.push({
       title, subtitle: (req.body[`card${n}Subtitle`] || '').trim(),
       photo, buttonText: req.body[`card${n}Button`] || 'Chat Now',
-      redirect: normalizeUrl(req.body[`card${n}Redirect`] || '')
+      redirect: normalizeUrl(req.body[`card${n}Redirect`] || req.body[`card${n}Redirect_${DEFAULT_SET}`] || ''),
+      redirectUrls: (function(){ var urls = {}; getSetNames().forEach(function(name){ var v = normalizeUrl(req.body['card' + n + 'Redirect_' + name] || ''); if (v) urls[name] = v; }); return urls; })()
     });
   }
   if (cards.length < 2) return res.redirect('/?page=carousel-sets&error=Need+at+least+2+cards');
@@ -3428,7 +3482,13 @@ app.get('/carousel-set-delete', (req, res) => {
 // --- Quick Replies ---
 app.post('/quick-reply-add', (req, res) => {
   const items = loadQuickReplyConfig();
-  items.push({ id: 'qr_' + Date.now(), label: req.body.label, replyFormat: req.body.replyFormat || 'card', payload: 'QR_' + Date.now(), active: true });
+  const idx = req.body.editIndex !== undefined && req.body.editIndex !== '' ? parseInt(req.body.editIndex) : -1;
+  if (idx >= 0 && items[idx]) {
+    items[idx].label = req.body.label;
+    items[idx].replyFormat = req.body.replyFormat || 'card';
+  } else {
+    items.push({ id: 'qr_' + Date.now(), label: req.body.label, replyFormat: req.body.replyFormat || 'card', payload: 'QR_' + Date.now(), active: true });
+  }
   saveQuickReplyConfig(items);
   res.redirect('/?page=quick-replies&saved=1');
 });
@@ -3449,8 +3509,13 @@ app.get('/quick-reply-delete', (req, res) => {
 app.post("/quick-reply-add-text", (req, res) => {
   const s = loadSettings();
   s.quickReplyTexts = Array.isArray(s.quickReplyTexts) ? s.quickReplyTexts : [];
-  const items = (req.body.texts || "").split("\n").map(t => t.trim()).filter(Boolean);
-  items.forEach(t => { if (!s.quickReplyTexts.includes(t)) s.quickReplyTexts.push(t); });
+  const editIdx = req.body.editTextIndex !== undefined && req.body.editTextIndex !== '' ? parseInt(req.body.editTextIndex) : -1;
+  if (editIdx >= 0 && editIdx < s.quickReplyTexts.length) {
+    s.quickReplyTexts[editIdx] = (req.body.texts || '').trim();
+  } else {
+    const items = (req.body.texts || "").split("\n").map(t => t.trim()).filter(Boolean);
+    items.forEach(t => { if (!s.quickReplyTexts.includes(t)) s.quickReplyTexts.push(t); });
+  }
   saveSettings(s);
   res.redirect("/?page=quick-replies&saved=1");
 });
