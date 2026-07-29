@@ -101,7 +101,7 @@ function addPage(data) {
     broadcastEnabled: false,
     sendNowEnabled: data.sendNowEnabled !== undefined ? data.sendNowEnabled : true,
     spacingSeconds: data.spacingSeconds || d.spacingSeconds,
-    cleanupThreshold: 0,
+    cleanupThreshold: 1,
     baselineFans: data.baselineFans || 0,
     group: data.group || '',
     createdAt: new Date().toISOString()
@@ -1889,14 +1889,8 @@ function renderPageView(page, req) {
   const pid = esc(page.pageId);
   const fans = loadFans(page.pageId);
   const stats = loadStats(page.pageId);
-  const clicks = stats.clicks || [];
-  const reads = stats.reads || [];
   const fansAdded = stats.fansAdded || [];
-  const dailyStats = getRecentDailyStats(page.pageId, 14);
   const todayStr = todayDate();
-  const todayClicks = clicks.filter(c => (c.time || '').startsWith(todayStr)).length;
-  const todaySent = dailyStats[0]?.sent || 0;
-  const todayFailed = dailyStats[0]?.failed || 0;
   const mode = pageContentMode(page);
   const pSendMode = pageSendMode(page);
   const globalMode = getGlobalContentMode();
@@ -1904,21 +1898,15 @@ function renderPageView(page, req) {
   const groups = getAllGroups();
   const bp = broadcastProgress[page.pageId];
 
-  const dailyChart = dailyStats.reverse().map(d => {
-    const max = Math.max(...dailyStats.map(x => x.sent + x.failed), 1);
-    const h = Math.round(((d.sent + d.failed) / max) * 80);
-    const failH = Math.round((d.failed / max) * 80);
-    const label = d.date.slice(5);
-    return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex:1;">
-      <div style="height:80px;display:flex;flex-direction:column-reverse;gap:0;">
-        <div style="width:14px;background:#22c55e;border-radius:2px 2px 0 0;height:${h - failH}px;"></div>
-        <div style="width:14px;background:#ef4444;border-radius:0;height:${failH}px;"></div>
-      </div>
-      <div style="font-size:9px;color:#94a3b8;writing-mode:vertical-rl;transform:rotate(180deg);height:40px;overflow:hidden;">${label}</div>
-    </div>`;
-  }).join('');
+  // New fans today
+  const newFansToday = fansAdded.filter(f => (f.time || '').startsWith(todayStr)).length;
+  const newFans7d = fansAdded.filter(f => {
+    const d = new Date(f.time); const now = new Date();
+    return (now - d) < 7 * 86400000;
+  }).length;
 
-  const broadcastRuns = (stats.broadcastRuns || []).slice(-5).reverse();
+  // Broadcast runs
+  const broadcastRuns = (stats.broadcastRuns || []).slice(-8).reverse();
   const runsHtml = broadcastRuns.map(r => {
     const t = new Date(r.startedAt);
     const time = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
@@ -1930,183 +1918,188 @@ function renderPageView(page, req) {
       <span style="color:#94a3b8;">/ ${r.total}</span>
       <span class="badge" style="${r.type === 'text' ? 'background:#fce7f3;color:#be185d;' : r.type === 'card+text' ? 'background:#ecfdf5;color:#166534;' : 'background:#dbeafe;color:#2563eb;'}font-size:10px;">${r.type || 'card'}</span>
     </div>`;
-  }).join('') || '<div style="color:#94a3b8;font-size:12px;">No runs yet today.</div>';
+  }).join('') || '<div style="color:#94a3b8;font-size:12px;">No broadcasts yet.</div>';
 
   const liveProgress = bp && bp.status === 'running'
     ? `<div class="alert" style="background:#dbeafe;color:#1e40af;border:1px solid #93c5fd;">
         <div style="font-weight:700;">📡 Broadcast in progress — ${bp.done}/${bp.total} (${Math.round(bp.done/bp.total*100)}%)</div>
-        <div style="background:#bfdbfe;border-radius:4px;height:8px;margin-top:6px;overflow:hidden;"><div style="background:#3a8dde;height:100%;width:${Math.round(bp.done/bp.total*100)}%;border-radius:4px;transition:width 0.3s;"></div></div>
+        <div style="background:#bfdbfe;border-radius:4px;height:8px;margin-top:6px;overflow:hidden;"><div style="background:#3a8dde;height:100%;width:${Math.round(bp.done/bp.total*100)}%;border-radius:4px;"></div></div>
         <div style="font-size:12px;margin-top:4px;">✅ ${bp.sent} sent · ❌ ${bp.failed} failed · ${bp.type || 'card'}</div>
         <script>setTimeout(function(){ location.reload(); }, 5000);</script>
       </div>`
     : '';
 
+  // Card preview
+  const photo = getCurrentPhoto(page);
+  const cardPreview = `
+    <div style="max-width:280px;">
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+        <div style="width:100%;aspect-ratio:1/1;background:#f1f5f9;overflow:hidden;">
+          <img src="${esc(photo)}" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.style.display='none';"/>
+        </div>
+        <div style="padding:12px 14px;">
+          <div style="font-weight:600;font-size:15px;color:#1a1d2e;">${esc(page.title)}</div>
+          <div style="font-size:13px;color:#6b7280;margin-top:3px;">${esc(page.subtitle)}</div>
+        </div>
+        <div style="border-top:1px solid #e5e7eb;padding:10px 14px;text-align:center;">
+          <span style="color:#3b82f6;font-size:14px;font-weight:600;">${esc(page.buttonText)}</span>
+        </div>
+      </div>
+      <div style="font-size:10px;color:#94a3b8;margin-top:6px;font-family:monospace;word-break:break-all;">🔗 ${esc((page.whatsapp || '').replace(/^https?:\/\//, ''))}</div>
+    </div>`;
+
   return `<div class="container">
     ${renderAlerts(req)}
     ${renderMasterRedirectBanner()}
     ${liveProgress}
-    <div class="card">
-      <h2>${esc(page.label)} <span style="font-size:12px;color:#94a3b8;font-weight:400;">${esc(page.pageId)}</span></h2>
-      <div class="grid">
-        <div class="stat"><div class="v">${fans.length}</div><div class="l">Fans</div></div>
-        <div class="stat"><div class="v">${todaySent}</div><div class="l">Sent today</div></div>
-        <div class="stat"><div class="v">${todayClicks}</div><div class="l">Clicks today</div></div>
-        <div class="stat" style="border-color:${todayFailed ? '#dc3545' : '#e5e7eb'};"><div class="v" style="color:${todayFailed ? '#dc3545' : '#1a1d2e'}">${todayFailed}</div><div class="l">Failed today</div></div>
-        <div class="stat"><div class="v">${stats.messagesSent || 0}</div><div class="l">Total sent</div></div>
-        <div class="stat"><div class="v">${clicks.length}</div><div class="l">Total clicks</div></div>
-      </div>
-      <div style="margin-top:16px;">
-        <h3 style="font-size:14px;margin-bottom:8px;">📈 Daily Activity (14 days)</h3>
-        <div style="display:flex;align-items:flex-end;gap:3px;background:#f7f8fc;padding:10px;border-radius:8px;min-height:100px;">
-          ${dailyChart}
-        </div>
-      </div>
-      <div style="margin-top:16px;">
-        <h3 style="font-size:14px;margin-bottom:4px;">📡 Recent Broadcasts</h3>
-        ${runsHtml}
-      </div>
-    </div>
-
-    ${renderPageLibrarySection(page)}
 
     <div class="card">
-      <h2>⚙️ Page Settings</h2>
-      <form action="/update-page" method="POST">
-        <input type="hidden" name="pageId" value="${pid}"/>
-        <div class="row">
-          <div><label>Label</label><input name="label" value="${esc(page.label)}"/></div>
-          <div><label>Group</label>
-            <select name="group">
-              <option value="">(No group)</option>
-              ${groups.map(g => `<option value="${esc(g)}" ${page.group === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}
-            </select>
-          </div>
-        </div>
-        <div class="row">
-          <div><label>Title</label><input name="title" value="${esc(page.title)}"/></div>
-          <div><label>Subtitle</label><input name="subtitle" value="${esc(page.subtitle)}"/></div>
-        </div>
-        <div class="row">
-          <div><label>Button Text</label><input name="buttonText" value="${esc(page.buttonText)}"/></div>
-          <div><label>Redirect URL</label><input name="whatsapp" value="${esc(page.whatsapp)}"/></div>
-        </div>
-        <div class="row">
-          <div><label>Broadcast Time</label><input type="time" name="broadcastTime" value="${esc(page.broadcastTime)}"/></div>
-          <div><label>Spacing</label>${renderSpacingSelect('spacingSeconds', page.spacingSeconds)}</div>
-        </div>
-        <div class="row">
-          <div><label>Auto-cleanup threshold</label>
-            <select name="cleanupThreshold">
-              ${[{v:0,l:'0 — Never auto-remove'},{v:1,l:'1 consecutive failure'},{v:2,l:'2 consecutive failures'},{v:3,l:'3 consecutive failures'},{v:5,l:'5 consecutive failures'},{v:10,l:'10 consecutive failures'}].map(o=>`<option value="${o.v}" ${page.cleanupThreshold === o.v ? 'selected' : ''}>${o.l}</option>`).join('')}
-            </select>
-          </div>
-          <div><label>Baseline fans offset</label><input type="number" name="baselineFans" value="${page.baselineFans || 0}"/></div>
-        </div>
-        <div class="row">
-          <div>
-            <label>Card Source</label>
-            <select name="contentMode">
-              <option value="" ${!page.contentMode ? 'selected' : ''}>🌐 Use global (${globalMode === 'templates' ? '🎴 Templates' : '📷 Classic'})</option>
-              <option value="classic" ${page.contentMode === 'classic' ? 'selected' : ''}>📷 Classic (this page)</option>
-              <option value="templates" ${page.contentMode === 'templates' ? 'selected' : ''}>🎴 Templates (this page)</option>
-            </select>
-          </div>
-          <div>
-            <label>Send Mode</label>
-            <select name="sendMode">
-              <option value="" ${!page.sendMode ? 'selected' : ''}>🌐 Use global (${globalSendMode === 'text' ? '💬 Text' : globalSendMode === 'card+text' ? '📷💬 Card+Text' : '📷 Card'})</option>
-              <option value="card" ${page.sendMode === 'card' ? 'selected' : ''}>📷 Card</option>
-              <option value="text" ${page.sendMode === 'text' ? 'selected' : ''}>💬 Text</option>
-              <option value="card+text" ${page.sendMode === 'card+text' ? 'selected' : ''}>📷💬 Card + Text</option>
-              <option value="media" ${page.sendMode === 'media' ? 'selected' : ''}>📷 Media Template</option>
-              <option value="button-msg" ${page.sendMode === 'button-msg' ? 'selected' : ''}>💬 Button Message</option>
-              <option value="carousel" ${page.sendMode === 'carousel' ? 'selected' : ''}>🎠 Carousel</option>
-              <option value="quick-reply" ${page.sendMode === 'quick-reply' ? 'selected' : ''}>💊 Quick Reply</option>
-              <option value="rotate" ${page.sendMode === 'rotate' ? 'selected' : ''}>🔄 Rotate</option>
-            </select>
-          </div>
-        </div>
-        <div style="margin-top:14px;">
-          <label>Redirect Set</label>
-          <select name="redirectSet">
-            ${getSetNames().map(n => `<option value="${esc(n)}" ${pageSet(page) === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}
-          </select>
-        </div>
-        <button type="submit" class="btn btn-blue" style="margin-top:12px;">💾 Save Settings</button>
-      </form>
-    </div>
-
-    <div class="card">
-      <h2>📤 Broadcast</h2>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
-        <form action="/send-now-page" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="btn btn-green" onclick="return confirm('Broadcast now? (${fans.length} fans)')">📣 Send Now (${fans.length})</button></form>
-        <form action="/randomize-and-send?page=${pid}" method="POST" style="margin:0;"><button type="submit" class="btn" style="background:#7c3aed;color:#fff;" onclick="return confirm('Randomize + Send?')">🎲🚀 Randomize + Send</button></form>
-        <form action="/${page.broadcastEnabled ? 'pause' : 'resume'}-page" method="POST" style="margin:0;">
-          <input type="hidden" name="pageId" value="${pid}"/>
-          <button type="submit" class="btn ${page.broadcastEnabled ? 'btn-orange' : 'btn-green'}">
-            ${page.broadcastEnabled ? '⏸ Pause Daily' : '▶ Resume Daily'}
-          </button>
-        </form>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <form action="/send-custom-text" method="POST" style="flex:1;min-width:260px;">
-          <input type="hidden" name="pageId" value="${pid}"/>
-          <label>💬 Send text to all fans:</label>
-          <textarea name="text" placeholder="Type a text message to broadcast..." style="min-height:60px;"></textarea>
-          <button type="submit" class="btn" style="background:#8b5cf6;color:#fff;" onclick="return confirm('Send this text to ${fans.length} fans?')">💬 Send Text</button>
-        </form>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>📷 Photo Gallery (${(page.photos || []).length})</h2>
-      <div class="photo-grid">
-        ${(page.photos || []).map((url, i) => {
-          const active = url === page.currentPhoto;
-          return `<div class="item ${active ? 'current' : ''}">
-            <div class="img-wrap">
-              <img src="${esc(url)}" onerror="this.style.display='none';"/>
-              ${active ? '<div class="badge-current" style="position:absolute;top:4px;left:4px;">★ Active</div>' : ''}
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:16px;">
+        <div style="flex:1;min-width:280px;">
+          <h2 style="margin-bottom:4px;">${esc(page.label)} <span style="font-size:12px;color:#94a3b8;font-weight:400;">${esc(page.pageId)}</span></h2>
+          <div style="display:flex;gap:16px;margin:12px 0;flex-wrap:wrap;">
+            <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 16px;text-align:center;">
+              <div style="font-size:24px;font-weight:700;color:#166534;">${fans.length}</div>
+              <div style="font-size:11px;color:#15803d;font-weight:600;">TOTAL FANS</div>
             </div>
-            <div class="url-row"><input value="${esc(url)}" readonly/></div>
-            <div class="action-row">
-              ${!active ? `<a href="/set-photo?page=${pid}&index=${i}" class="ph-btn ph-active">☆ Set Active</a>` : ''}
-              <a href="/remove-photo?page=${pid}&index=${i}" class="ph-btn ph-remove" onclick="return confirm('Remove?')">× Remove</a>
+            <div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:10px 16px;text-align:center;">
+              <div style="font-size:24px;font-weight:700;color:#1e40af;">+${newFansToday}</div>
+              <div style="font-size:11px;color:#2563eb;font-weight:600;">NEW TODAY</div>
             </div>
-          </div>`;
-        }).join('')}
+            <div style="background:#faf5ff;border:1px solid #c4b5fd;border-radius:8px;padding:10px 16px;text-align:center;">
+              <div style="font-size:24px;font-weight:700;color:#6b21a8;">+${newFans7d}</div>
+              <div style="font-size:11px;color:#7c3aed;font-weight:600;">NEW 7 DAYS</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+            <form action="/send-now-page" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="qbtn" style="background:#16a34a;padding:7px 14px;" onclick="return confirm('Send Now to ${fans.length} fans?')">📣 Send Now</button></form>
+            <form action="/randomize-and-send?page=${pid}" method="POST" style="margin:0;"><button type="submit" class="qbtn" style="background:#7c3aed;padding:7px 14px;" onclick="return confirm('Randomize + Send?')">🎲🚀 Rand+Send</button></form>
+            <form action="/${page.broadcastEnabled ? 'pause' : 'resume'}-page" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="qbtn" style="background:${page.broadcastEnabled ? '#f59e0b' : '#28a745'};padding:7px 14px;">${page.broadcastEnabled ? '⏸ Pause Auto' : '▶ Resume Auto'}</button></form>
+            <form action="/clear-fans" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="qbtn" style="background:#dc3545;padding:7px 14px;" onclick="return confirm('Clear ALL fans?')">🗑️ Fans</button></form>
+            <form action="/reset-stats" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="qbtn" style="background:#dc3545;padding:7px 14px;" onclick="return confirm('Reset stats?')">🗑️ Stats</button></form>
+          </div>
+        </div>
+        <div>${cardPreview}</div>
       </div>
-      <form action="/add-photo" method="POST" style="margin-top:14px;">
-        <input type="hidden" name="pageId" value="${pid}"/>
-        <label>Add photo URL</label>
-        <div style="display:flex;gap:8px;"><input name="photoUrl" placeholder="https://i.imgur.com/abc.png" style="flex:1;"/><button type="submit" class="btn btn-green">+ Add</button></div>
-      </form>
     </div>
 
-    <div class="card">
-      <h2>👥 Fan List (${fans.length})</h2>
+    <div class="card" style="padding:0;overflow:hidden;">
       <details>
-        <summary style="cursor:pointer;font-weight:600;color:#4a5568;padding:6px 0;">Show ${fans.length} PSIDs</summary>
-        <div style="max-height:300px;overflow-y:auto;margin-top:8px;">
-          ${fans.map((psid, i) => `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;font-family:monospace;">
-            <span style="color:#94a3b8;min-width:30px;">${i+1}.</span>
-            <span style="flex:1;">${esc(psid)}</span>
-            <a href="/remove-fan?page=${pid}&psid=${esc(psid)}" onclick="return confirm('Remove?')" style="color:#dc2626;text-decoration:none;font-weight:700;">×</a>
-          </div>`).join('')}
+        <summary style="cursor:pointer;padding:16px 22px;display:flex;align-items:center;gap:10px;user-select:none;list-style:none;">
+          <span style="font-size:14px;color:#8b5cf6;transition:transform 0.2s;display:inline-block;" class="bp-arrow">▶</span>
+          <span style="font-size:16px;font-weight:700;color:#1a1d2e;">📡 Recent Broadcasts</span>
+          <span style="font-size:12px;color:#94a3b8;">${broadcastRuns.length} runs</span>
+        </summary>
+        <div style="padding:0 22px 18px;">${runsHtml}</div>
+      </details>
+    </div>
+
+    <div class="card" style="padding:0;overflow:hidden;">
+      <details>
+        <summary style="cursor:pointer;padding:16px 22px;display:flex;align-items:center;gap:10px;user-select:none;list-style:none;">
+          <span style="font-size:14px;color:#8b5cf6;transition:transform 0.2s;display:inline-block;" class="bp-arrow">▶</span>
+          <span style="font-size:16px;font-weight:700;color:#1a1d2e;">🎲 Quick Switch & Randomize</span>
+          <span style="font-size:12px;color:#94a3b8;">Set: ${esc(pageSet(page))} · Mode: ${mode === 'templates' ? '🎴 Templates' : '📷 Classic'}</span>
+        </summary>
+        <div style="padding:0 22px 18px;">
+          ${renderPageLibrarySection(page).replace(/<div class="card"[^>]*>/, '<div>').replace(/<\/div>\s*$/, '</div>')}
         </div>
       </details>
-      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
-        <form action="/import-contacts" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="btn btn-blue">📥 Import Contacts</button></form>
-        <form action="/clear-fans" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="btn btn-red" onclick="return confirm('Clear ALL fans for this page?')">🗑️ Clear Fans</button></form>
-        <form action="/reset-stats" method="POST" style="margin:0;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="btn btn-red" onclick="return confirm('Reset stats?')">🗑️ Reset Stats</button></form>
-      </div>
     </div>
 
-    <div class="card danger-zone">
-      <h2>⚠️ Danger Zone</h2>
-      <form action="/remove-page" method="POST">
+    <div class="card" style="padding:0;overflow:hidden;">
+      <details>
+        <summary style="cursor:pointer;padding:16px 22px;display:flex;align-items:center;gap:10px;user-select:none;list-style:none;">
+          <span style="font-size:14px;color:#8b5cf6;transition:transform 0.2s;display:inline-block;" class="bp-arrow">▶</span>
+          <span style="font-size:16px;font-weight:700;color:#1a1d2e;">⚙️ Page Settings</span>
+        </summary>
+        <div style="padding:0 22px 18px;">
+          <form action="/update-page" method="POST">
+            <input type="hidden" name="pageId" value="${pid}"/>
+            <div class="row">
+              <div><label>Label</label><input name="label" value="${esc(page.label)}"/></div>
+              <div><label>Group</label>
+                <select name="group"><option value="">(No group)</option>${groups.map(g => `<option value="${esc(g)}" ${page.group === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}</select>
+              </div>
+            </div>
+            <div class="row">
+              <div><label>Title</label><input name="title" value="${esc(page.title)}"/></div>
+              <div><label>Subtitle</label><input name="subtitle" value="${esc(page.subtitle)}"/></div>
+            </div>
+            <div class="row">
+              <div><label>Button Text</label><input name="buttonText" value="${esc(page.buttonText)}"/></div>
+              <div><label>Redirect URL</label><input name="whatsapp" value="${esc(page.whatsapp)}"/></div>
+            </div>
+            <div class="row">
+              <div><label>Broadcast Time</label><input type="time" name="broadcastTime" value="${esc(page.broadcastTime)}"/></div>
+              <div><label>Spacing</label>${renderSpacingSelect('spacingSeconds', page.spacingSeconds)}</div>
+            </div>
+            <div class="row">
+              <div><label>Auto-cleanup threshold</label>
+                <select name="cleanupThreshold">
+                  ${[{v:0,l:'0 — Never auto-remove'},{v:1,l:'1 consecutive failure'},{v:2,l:'2 consecutive failures'},{v:3,l:'3 consecutive failures'},{v:5,l:'5 consecutive failures'},{v:10,l:'10 consecutive failures'}].map(o=>`<option value="${o.v}" ${page.cleanupThreshold === o.v ? 'selected' : ''}>${o.l}</option>`).join('')}
+                </select>
+              </div>
+              <div><label>Baseline fans offset</label><input type="number" name="baselineFans" value="${page.baselineFans || 0}"/></div>
+            </div>
+            <div class="row">
+              <div><label>Card Source</label>
+                <select name="contentMode">
+                  <option value="" ${!page.contentMode ? 'selected' : ''}>🌐 Use global (${globalMode === 'templates' ? '🎴 Templates' : '📷 Classic'})</option>
+                  <option value="classic" ${page.contentMode === 'classic' ? 'selected' : ''}>📷 Classic</option>
+                  <option value="templates" ${page.contentMode === 'templates' ? 'selected' : ''}>🎴 Templates</option>
+                </select>
+              </div>
+              <div><label>Send Mode</label>
+                <select name="sendMode">
+                  <option value="" ${!page.sendMode ? 'selected' : ''}>🌐 Use global</option>
+                  <option value="card" ${page.sendMode === 'card' ? 'selected' : ''}>📷 Card</option>
+                  <option value="text" ${page.sendMode === 'text' ? 'selected' : ''}>💬 Text</option>
+                  <option value="card+text" ${page.sendMode === 'card+text' ? 'selected' : ''}>📷💬 Card + Text</option>
+                  <option value="media" ${page.sendMode === 'media' ? 'selected' : ''}>📷 Media Template</option>
+                  <option value="button-msg" ${page.sendMode === 'button-msg' ? 'selected' : ''}>💬 Button Message</option>
+                  <option value="carousel" ${page.sendMode === 'carousel' ? 'selected' : ''}>🎠 Carousel</option>
+                  <option value="quick-reply" ${page.sendMode === 'quick-reply' ? 'selected' : ''}>💊 Quick Reply</option>
+                  <option value="rotate" ${page.sendMode === 'rotate' ? 'selected' : ''}>🔄 Rotate</option>
+                </select>
+              </div>
+            </div>
+            <div style="margin-top:8px;">
+              <label>Redirect Set</label>
+              <select name="redirectSet">${getSetNames().map(n => `<option value="${esc(n)}" ${pageSet(page) === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+            </div>
+            <button type="submit" class="btn btn-blue" style="margin-top:12px;">💾 Save Settings</button>
+          </form>
+        </div>
+      </details>
+    </div>
+
+    <div class="card" style="padding:0;overflow:hidden;">
+      <details>
+        <summary style="cursor:pointer;padding:16px 22px;display:flex;align-items:center;gap:10px;user-select:none;list-style:none;">
+          <span style="font-size:14px;color:#8b5cf6;transition:transform 0.2s;display:inline-block;" class="bp-arrow">▶</span>
+          <span style="font-size:16px;font-weight:700;color:#1a1d2e;">👥 Fan List</span>
+          <span style="font-size:12px;color:#94a3b8;">${fans.length} PSIDs</span>
+        </summary>
+        <div style="padding:0 22px 18px;">
+          <div style="max-height:300px;overflow-y:auto;margin-top:4px;">
+            ${fans.map((psid, i) => `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;font-family:monospace;">
+              <span style="color:#94a3b8;min-width:30px;">${i+1}.</span>
+              <span style="flex:1;">${esc(psid)}</span>
+              <a href="/remove-fan?page=${pid}&psid=${esc(psid)}" onclick="return confirm('Remove?')" style="color:#dc2626;text-decoration:none;font-weight:700;">×</a>
+            </div>`).join('')}
+          </div>
+          <div style="margin-top:10px;">
+            <form action="/import-contacts" method="POST" style="display:inline;"><input type="hidden" name="pageId" value="${pid}"/><button type="submit" class="btn btn-blue" style="font-size:12px;">📥 Import Contacts</button></form>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <div class="card danger-zone" style="padding:14px 22px;">
+      <form action="/remove-page" method="POST" style="display:inline;">
         <input type="hidden" name="pageId" value="${pid}"/>
-        <button type="submit" class="btn btn-red" onclick="return confirm('Delete this page? Data will be lost.')">🗑️ Remove Page</button>
+        <button type="submit" class="btn btn-red" style="font-size:12px;" onclick="return confirm('Delete this page? Data will be lost.')">🗑️ Remove Page</button>
       </form>
     </div>
   </div>`;
@@ -3083,31 +3076,22 @@ function sendWithQuickReplies(page, psid, opts = {}) {
 // ============================================
 function renderMediaTemplatesPage(req) {
   const items = loadMediaTemplates();
-  const lib = loadLibrary();
   const cards = items.map((t, i) => {
     const isActive = t.active !== false;
     const mType = t.mediaType || 'image';
     const typeBadge = mType === 'video' ? '🎬 Video' : mType === 'gif' ? '🔄 GIF' : '📷 Image';
     const typeColor = mType === 'video' ? '#7c3aed' : mType === 'gif' ? '#0891b2' : '#f97316';
     const preview = mType === 'video'
-      ? `<div style="width:100%;aspect-ratio:16/9;background:#1a1d2e;display:flex;align-items:center;justify-content:center;position:relative;">
-          <div style="width:50px;height:50px;border-radius:50%;background:rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;"><span style="font-size:24px;color:#fff;margin-left:4px;">▶</span></div>
-          <span style="position:absolute;bottom:6px;left:6px;background:${typeColor};color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;">${typeBadge}</span>
-          ${isActive ? '' : '<span style="position:absolute;top:6px;right:6px;background:#64748b;color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;">PAUSED</span>'}
-        </div>`
-      : `<div style="width:100%;aspect-ratio:3/4;background:#f1f5f9;position:relative;">
-          <img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/>
-          <span style="position:absolute;bottom:6px;left:6px;background:${typeColor};color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;">${typeBadge}</span>
-          ${isActive ? '' : '<span style="position:absolute;top:6px;right:6px;background:#64748b;color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;">PAUSED</span>'}
-        </div>`;
+      ? `<div style="width:100%;aspect-ratio:16/9;background:#1a1d2e;display:flex;align-items:center;justify-content:center;position:relative;"><div style="width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;font-size:20px;color:#fff;">▶</div><span style="position:absolute;bottom:4px;left:4px;background:${typeColor};color:#fff;font-size:8px;font-weight:700;padding:2px 6px;border-radius:6px;">${typeBadge}</span></div>`
+      : `<div style="width:100%;aspect-ratio:3/4;background:#f1f5f9;position:relative;overflow:hidden;"><img src="${esc(t.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/><span style="position:absolute;bottom:4px;left:4px;background:${typeColor};color:#fff;font-size:8px;font-weight:700;padding:2px 6px;border-radius:6px;">${typeBadge}</span></div>`;
     return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${typeColor};border-radius:8px;overflow:hidden;${isActive ? '' : 'opacity:0.5;'}">
       ${preview}
       <div style="padding:10px;">
-        <div style="font-size:12px;color:${typeColor};font-weight:600;">🔘 ${esc(t.buttonText || 'See Photos')}</div>
-        <div style="font-size:11px;color:#94a3b8;font-family:monospace;margin-top:4px;word-break:break-all;">🔗 ${esc((t.buttonUrl || '').replace(/^https?:\/\//, ''))}</div>
-        <div style="font-size:10px;color:#94a3b8;margin-top:2px;word-break:break-all;">📎 ${esc((t.photo || '').replace(/^https?:\/\//, '').slice(0, 40))}...</div>
-        <div style="display:flex;gap:6px;margin-top:8px;">
-          <a href="/media-template-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};flex:1;text-align:center;">${isActive ? '⏸' : '▶'}</a>
+        <div style="font-size:11px;color:${typeColor};font-weight:600;">🔘 ${esc(t.buttonText || 'See Photos')}</div>
+        <div style="font-size:10px;color:#94a3b8;font-family:monospace;margin-top:3px;word-break:break-all;">🔗 ${esc((t.buttonUrl || '').replace(/^https?:\/\//, '').slice(0, 30))}</div>
+        <div style="display:flex;gap:4px;margin-top:8px;">
+          <button type="button" class="qbtn" style="background:#6366f1;flex:1;" onclick="editMT(${i})">✏️</button>
+          <a href="/media-template-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? '⏸' : '▶'}</a>
           <a href="/media-template-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">🗑️</a>
         </div>
       </div>
@@ -3121,38 +3105,35 @@ function renderMediaTemplatesPage(req) {
       <div style="font-size:13px;color:#f97316;font-weight:600;margin-top:8px;">${items.length} media templates · ${items.filter(t=>t.active!==false).length} active</div>
     </div>
     <div class="card" style="border:2px solid #fed7aa;">
-      <h2>➕ Add Media Template</h2>
-      <form action="/media-template-add" method="POST">
+      <h2 id="mt-form-title">➕ Add Media Template</h2>
+      <form action="/media-template-add" method="POST" id="mt-form">
+        <input type="hidden" name="editIndex" id="mt-idx" value=""/>
         <div class="row">
-          <div>
-            <label>Media Type</label>
-            <select name="mediaType" style="font-size:14px;">
-              <option value="image">📷 Image (jpg, png)</option>
-              <option value="gif">🔄 GIF (animated, max 8MB)</option>
-              <option value="video">🎬 Video (mp4/mov, max 25MB)</option>
-            </select>
-          </div>
-          <div><label>Media URL</label><input name="photo" placeholder="https://i.imgur.com/xxxxx.png or .mp4 or .gif" required/></div>
+          <div><label>Media Type</label><select name="mediaType" id="mt-type" style="font-size:14px;"><option value="image">📷 Image</option><option value="gif">🔄 GIF</option><option value="video">🎬 Video</option></select></div>
+          <div><label>Media URL</label><input name="photo" id="mt-photo" placeholder="https://i.imgur.com/xxxxx.png" required/></div>
         </div>
         <div class="row" style="margin-top:8px;">
-          <div><label>Button Text</label><input name="buttonText" placeholder="See My Photos 📸" value="See My Photos 📸"/></div>
-          <div><label>Button URL (redirect)</label><input name="buttonUrl" placeholder="https://scrollgallery.com/?p=..." required/></div>
+          <div><label>Button Text</label><input name="buttonText" id="mt-btn" placeholder="See My Photos 📸" value="See My Photos 📸"/></div>
+          <div><label>Button URL (redirect)</label><input name="buttonUrl" id="mt-url" placeholder="https://scrollgallery.com/?p=..." required/></div>
         </div>
-        <button type="submit" class="btn btn-green" style="margin-top:12px;">➕ Add Media Template</button>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button type="submit" class="btn btn-green" id="mt-submit">➕ Add Media Template</button>
+          <button type="button" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="mt-cancel" onclick="resetMT()">Cancel</button>
+        </div>
       </form>
     </div>
     <div class="card">
       <h2>📋 Existing Media Templates (${items.length})</h2>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;">
-        ${cards || '<span style="color:#94a3b8;">None yet.</span>'}
-      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;">${cards || '<span style="color:#94a3b8;">None yet.</span>'}</div>
     </div>
+    <script>
+    var MT_DATA=${JSON.stringify(items)};
+    function editMT(i){var t=MT_DATA[i];if(!t)return;document.getElementById('mt-form-title').textContent='✏️ Editing #'+(i+1);document.getElementById('mt-idx').value=i;document.getElementById('mt-type').value=t.mediaType||'image';document.getElementById('mt-photo').value=t.photo||'';document.getElementById('mt-btn').value=t.buttonText||'';document.getElementById('mt-url').value=t.buttonUrl||'';document.getElementById('mt-submit').textContent='💾 Save';document.getElementById('mt-cancel').style.display='inline-block';document.getElementById('mt-form').scrollIntoView({behavior:'smooth'});}
+    function resetMT(){document.getElementById('mt-form-title').textContent='➕ Add Media Template';document.getElementById('mt-idx').value='';document.getElementById('mt-type').value='image';document.getElementById('mt-photo').value='';document.getElementById('mt-btn').value='See My Photos 📸';document.getElementById('mt-url').value='';document.getElementById('mt-submit').textContent='➕ Add Media Template';document.getElementById('mt-cancel').style.display='none';}
+    </script>
   </div>`;
 }
 
-// ============================================
-// RENDER: Button Messages Page
-// ============================================
 function renderButtonMessagesPage(req) {
   const items = loadButtonMessages();
   const cards = items.map((t, i) => {
@@ -3160,12 +3141,10 @@ function renderButtonMessagesPage(req) {
     const btns = t.buttons || [];
     return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #ec4899;border-radius:8px;padding:14px;${isActive ? '' : 'opacity:0.5;'}">
       <div style="font-size:14px;color:#1a1d2e;margin-bottom:8px;white-space:pre-wrap;">${esc(t.text)}</div>
-      ${btns.map(b => `<div style="border-top:1px solid #f1f5f9;padding:6px 0;text-align:center;">
-        <span style="color:#3b82f6;font-size:13px;font-weight:500;">${esc(b.title)}</span>
-        <span style="font-size:10px;color:#94a3b8;display:block;font-family:monospace;">→ ${esc((b.url||'').replace(/^https?:\/\//, ''))}</span>
-      </div>`).join('')}
-      <div style="display:flex;gap:6px;margin-top:10px;">
-        <a href="/button-message-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};flex:1;text-align:center;">${isActive ? '⏸' : '▶'}</a>
+      ${btns.map(b => `<div style="border-top:1px solid #f1f5f9;padding:6px 0;text-align:center;"><span style="color:#3b82f6;font-size:13px;font-weight:500;">${esc(b.title)}</span><div style="font-size:9px;color:#94a3b8;font-family:monospace;">→ ${esc((b.url||'').replace(/^https?:\/\//, '').slice(0,35))}</div></div>`).join('')}
+      <div style="display:flex;gap:4px;margin-top:10px;">
+        <button type="button" class="qbtn" style="background:#6366f1;flex:1;" onclick="editBM(${i})">✏️ Edit</button>
+        <a href="/button-message-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? '⏸' : '▶'}</a>
         <a href="/button-message-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">🗑️</a>
       </div>
     </div>`;
@@ -3178,54 +3157,52 @@ function renderButtonMessagesPage(req) {
       <div style="font-size:13px;color:#ec4899;font-weight:600;margin-top:8px;">${items.length} button messages · ${items.filter(t=>t.active!==false).length} active</div>
     </div>
     <div class="card" style="border:2px solid #fbcfe8;">
-      <h2>➕ Add Button Message</h2>
-      <form action="/button-message-add" method="POST">
+      <h2 id="bm-form-title">➕ Add Button Message</h2>
+      <form action="/button-message-add" method="POST" id="bm-form">
+        <input type="hidden" name="editIndex" id="bm-idx" value=""/>
         <label>Message Text</label>
-        <textarea name="text" placeholder="Hey, I just uploaded new photos... want to see them? 😊" required></textarea>
+        <textarea name="text" id="bm-text" placeholder="Hey, I just uploaded new photos... want to see them? 😊" required></textarea>
         <div style="margin-top:12px;background:#fdf2f8;border:1px solid #fbcfe8;border-radius:8px;padding:12px;">
           <div style="font-size:13px;font-weight:600;color:#be185d;margin-bottom:8px;">Buttons (up to 3)</div>
-          <div class="row"><div><label>Button 1 Title</label><input name="btn1Title" placeholder="See My Photos 📸" required/></div><div><label>Button 1 URL</label><input name="btn1Url" placeholder="https://scrollgallery.com/?p=..." required/></div></div>
-          <div class="row" style="margin-top:6px;"><div><label>Button 2 Title (optional)</label><input name="btn2Title" placeholder="WhatsApp 💬"/></div><div><label>Button 2 URL</label><input name="btn2Url" placeholder="https://wa.me/..."/></div></div>
-          <div class="row" style="margin-top:6px;"><div><label>Button 3 Title (optional)</label><input name="btn3Title" placeholder="Video Call 📹"/></div><div><label>Button 3 URL</label><input name="btn3Url" placeholder=""/></div></div>
+          <div class="row"><div><label>Button 1 Title</label><input name="btn1Title" id="bm-b1t" placeholder="See My Photos 📸" required/></div><div><label>Button 1 URL</label><input name="btn1Url" id="bm-b1u" placeholder="https://..." required/></div></div>
+          <div class="row" style="margin-top:6px;"><div><label>Button 2 Title</label><input name="btn2Title" id="bm-b2t" placeholder="WhatsApp 💬"/></div><div><label>Button 2 URL</label><input name="btn2Url" id="bm-b2u"/></div></div>
+          <div class="row" style="margin-top:6px;"><div><label>Button 3 Title</label><input name="btn3Title" id="bm-b3t"/></div><div><label>Button 3 URL</label><input name="btn3Url" id="bm-b3u"/></div></div>
         </div>
-        <button type="submit" class="btn btn-green" style="margin-top:12px;">➕ Add Button Message</button>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button type="submit" class="btn btn-green" id="bm-submit">➕ Add Button Message</button>
+          <button type="button" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="bm-cancel" onclick="resetBM()">Cancel</button>
+        </div>
       </form>
     </div>
     <div class="card">
       <h2>📋 Existing Button Messages (${items.length})</h2>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;">
-        ${cards || '<span style="color:#94a3b8;">None yet.</span>'}
-      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;">${cards || '<span style="color:#94a3b8;">None yet.</span>'}</div>
     </div>
+    <script>
+    var BM_DATA=${JSON.stringify(items)};
+    function editBM(i){var t=BM_DATA[i];if(!t)return;document.getElementById('bm-form-title').textContent='✏️ Editing #'+(i+1);document.getElementById('bm-idx').value=i;document.getElementById('bm-text').value=t.text||'';var b=t.buttons||[];document.getElementById('bm-b1t').value=b[0]?b[0].title:'';document.getElementById('bm-b1u').value=b[0]?b[0].url:'';document.getElementById('bm-b2t').value=b[1]?b[1].title:'';document.getElementById('bm-b2u').value=b[1]?b[1].url:'';document.getElementById('bm-b3t').value=b[2]?b[2].title:'';document.getElementById('bm-b3u').value=b[2]?b[2].url:'';document.getElementById('bm-submit').textContent='💾 Save';document.getElementById('bm-cancel').style.display='inline-block';document.getElementById('bm-form').scrollIntoView({behavior:'smooth'});}
+    function resetBM(){document.getElementById('bm-form-title').textContent='➕ Add Button Message';document.getElementById('bm-idx').value='';document.getElementById('bm-text').value='';['bm-b1t','bm-b1u','bm-b2t','bm-b2u','bm-b3t','bm-b3u'].forEach(function(id){document.getElementById(id).value='';});document.getElementById('bm-submit').textContent='➕ Add Button Message';document.getElementById('bm-cancel').style.display='none';}
+    </script>
   </div>`;
 }
 
-// ============================================
-// RENDER: Carousel Sets Page
-// ============================================
 function renderCarouselSetsPage(req) {
   const sets = loadCarouselSets();
-  const lib = loadLibrary();
   const setCards = sets.map((s, si) => {
     const isActive = s.active !== false;
     const cardsHtml = (s.cards || []).map((c, ci) => `
       <div style="min-width:130px;max-width:130px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;flex-shrink:0;">
         <div style="width:130px;height:130px;background:#e2e8f0;overflow:hidden;"><img src="${esc(c.photo)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';"/></div>
-        <div style="padding:6px 8px;">
-          <div style="font-weight:600;font-size:11px;color:#1a1d2e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(c.title)}</div>
-          <div style="font-size:10px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(c.subtitle || '')}</div>
-        </div>
-        <div style="border-top:1px solid #e2e8f0;padding:5px;text-align:center;">
-          <span style="color:#3b82f6;font-size:10px;font-weight:600;">${esc(c.buttonText || 'Chat')}</span>
-        </div>
-      </div>
-    `).join('');
+        <div style="padding:6px 8px;"><div style="font-weight:600;font-size:11px;color:#1a1d2e;">${esc(c.title)}</div><div style="font-size:10px;color:#94a3b8;">${esc(c.subtitle || '')}</div></div>
+        <div style="border-top:1px solid #e2e8f0;padding:4px;text-align:center;"><span style="color:#3b82f6;font-size:10px;font-weight:600;">${esc(c.buttonText || 'Chat')}</span></div>
+      </div>`).join('');
     return `<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #8b5cf6;border-radius:8px;padding:14px;${isActive ? '' : 'opacity:0.5;'}">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
         <div style="font-weight:600;font-size:15px;color:#1a1d2e;">${esc(s.name || 'Set ' + (si+1))}</div>
-        <div style="display:flex;gap:6px;">
+        <div style="display:flex;gap:4px;">
+          <button type="button" class="qbtn" style="background:#6366f1;" onclick="editCS(${si})">✏️</button>
           <a href="/carousel-set-toggle?index=${si}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? '⏸' : '▶'}</a>
-          <a href="/carousel-set-delete?index=${si}" onclick="return confirm('Delete this carousel set?')" class="qbtn" style="background:#dc2626;">🗑️</a>
+          <a href="/carousel-set-delete?index=${si}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">🗑️</a>
         </div>
       </div>
       <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;">${cardsHtml || '<span style="color:#94a3b8;font-size:12px;">No cards.</span>'}</div>
@@ -3236,105 +3213,41 @@ function renderCarouselSetsPage(req) {
   return `<div class="container">
     ${renderAlerts(req)}
     <div class="card"><h2>🎠 Carousel Sets</h2>
-      <p style="color:#6b7280;font-size:13px;">Swipeable cards side by side. Fan picks who to chat with. Each set is sent as one message.</p>
+      <p style="color:#6b7280;font-size:13px;">Swipeable cards side by side. Fan picks who to chat with.</p>
       <div style="font-size:13px;color:#8b5cf6;font-weight:600;margin-top:8px;">${sets.length} carousel sets · ${sets.filter(t=>t.active!==false).length} active</div>
     </div>
     <div class="card" style="border:2px solid #ddd6fe;">
-      <h2>➕ Create Carousel Set</h2>
-      <form action="/carousel-set-add" method="POST">
-        <label>Set Name</label>
-        <input name="name" placeholder='e.g. "Hot Girls Set 1"' required/>
+      <h2 id="cs-form-title">➕ Create Carousel Set</h2>
+      <form action="/carousel-set-add" method="POST" id="cs-form">
+        <input type="hidden" name="editIndex" id="cs-idx" value=""/>
+        <label>Set Name</label><input name="name" id="cs-name" placeholder='e.g. "Hot Girls Set 1"' required/>
         <div style="margin-top:12px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px;">
-          <div style="font-size:13px;font-weight:600;color:#6b21a8;margin-bottom:8px;">Cards in this carousel (2-10)</div>
-          ${[1,2,3].map(n => `
-          <div style="border:1px solid #e9d5ff;border-radius:8px;padding:10px;margin-bottom:8px;background:#fff;">
+          <div style="font-size:13px;font-weight:600;color:#6b21a8;margin-bottom:8px;">Cards (2-10)</div>
+          ${[1,2,3].map(n => `<div style="border:1px solid #e9d5ff;border-radius:8px;padding:10px;margin-bottom:8px;background:#fff;">
             <div style="font-size:12px;font-weight:600;color:#8b5cf6;margin-bottom:6px;">Card ${n} ${n > 2 ? '(optional)' : ''}</div>
-            <div class="row"><div><label>Name</label><input name="card${n}Title" placeholder="Jessica 35" ${n <= 2 ? 'required' : ''}/></div><div><label>Subtitle</label><input name="card${n}Subtitle" placeholder="Message me"/></div></div>
-            <div class="row" style="margin-top:4px;"><div><label>Photo URL</label><input name="card${n}Photo" placeholder="https://i.imgur.com/..." ${n <= 2 ? 'required' : ''}/></div><div><label>Button Text</label><input name="card${n}Button" placeholder="Chat Now" value="Chat Now"/></div></div>
-            <label style="margin-top:4px;">Redirect URL</label><input name="card${n}Redirect" placeholder="https://scrollgallery.com/?p=..." ${n <= 2 ? 'required' : ''}/>
+            <div class="row"><div><label>Name</label><input name="card${n}Title" id="cs-c${n}t" placeholder="Jessica 35" ${n <= 2 ? 'required' : ''}/></div><div><label>Subtitle</label><input name="card${n}Subtitle" id="cs-c${n}s"/></div></div>
+            <div class="row" style="margin-top:4px;"><div><label>Photo URL</label><input name="card${n}Photo" id="cs-c${n}p" ${n <= 2 ? 'required' : ''}/></div><div><label>Button Text</label><input name="card${n}Button" id="cs-c${n}b" value="Chat Now"/></div></div>
+            <label style="margin-top:4px;">Redirect URL</label><input name="card${n}Redirect" id="cs-c${n}r" ${n <= 2 ? 'required' : ''}/>
           </div>`).join('')}
         </div>
-        <button type="submit" class="btn btn-green" style="margin-top:8px;">➕ Create Carousel Set</button>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button type="submit" class="btn btn-green" id="cs-submit">➕ Create Carousel Set</button>
+          <button type="button" class="btn" style="background:#e2e8f0;color:#475569;display:none;" id="cs-cancel" onclick="resetCS()">Cancel</button>
+        </div>
       </form>
     </div>
     <div class="card">
       <h2>📋 Existing Carousel Sets (${sets.length})</h2>
       <div style="display:grid;gap:12px;">${setCards || '<span style="color:#94a3b8;">None yet.</span>'}</div>
     </div>
+    <script>
+    var CS_DATA=${JSON.stringify(sets)};
+    function editCS(i){var s=CS_DATA[i];if(!s)return;document.getElementById('cs-form-title').textContent='✏️ Editing: '+(s.name||'Set '+(i+1));document.getElementById('cs-idx').value=i;document.getElementById('cs-name').value=s.name||'';var cards=s.cards||[];for(var n=1;n<=3;n++){var c=cards[n-1]||{};try{document.getElementById('cs-c'+n+'t').value=c.title||'';document.getElementById('cs-c'+n+'s').value=c.subtitle||'';document.getElementById('cs-c'+n+'p').value=c.photo||'';document.getElementById('cs-c'+n+'b').value=c.buttonText||'Chat Now';document.getElementById('cs-c'+n+'r').value=c.redirect||'';}catch(e){}}document.getElementById('cs-submit').textContent='💾 Save';document.getElementById('cs-cancel').style.display='inline-block';document.getElementById('cs-form').scrollIntoView({behavior:'smooth'});}
+    function resetCS(){document.getElementById('cs-form-title').textContent='➕ Create Carousel Set';document.getElementById('cs-idx').value='';document.getElementById('cs-name').value='';for(var n=1;n<=3;n++){try{document.getElementById('cs-c'+n+'t').value='';document.getElementById('cs-c'+n+'s').value='';document.getElementById('cs-c'+n+'p').value='';document.getElementById('cs-c'+n+'b').value='Chat Now';document.getElementById('cs-c'+n+'r').value='';}catch(e){}}document.getElementById('cs-submit').textContent='➕ Create Carousel Set';document.getElementById('cs-cancel').style.display='none';}
+    </script>
   </div>`;
 }
 
-// ============================================
-// RENDER: Quick Replies Page
-// ============================================
-function renderQuickRepliesPage(req) {
-  const items = loadQuickReplyConfig();
-  const s = loadSettings();
-  const qrTexts = Array.isArray(s.quickReplyTexts) ? s.quickReplyTexts : [];
-  const chips = items.map((q, i) => {
-    const isActive = q.active !== false;
-    return `<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;${isActive ? '' : 'opacity:0.5;'}">
-      <div style="background:#06b6d4;color:#fff;font-size:13px;font-weight:500;padding:5px 14px;border-radius:20px;">${esc(q.label)}</div>
-      <div style="flex:1;font-size:11px;color:#6b7280;">replies with: <strong>${esc(q.replyFormat || 'card')}</strong></div>
-      <a href="/quick-reply-toggle?index=${i}" class="qbtn" style="background:${isActive ? '#f59e0b' : '#16a34a'};">${isActive ? '⏸' : '▶'}</a>
-      <a href="/quick-reply-delete?index=${i}" onclick="return confirm('Delete?')" class="qbtn" style="background:#dc2626;">×</a>
-    </div>`;
-  }).join('');
-
-  const activePills = items.filter(q => q.active !== false);
-  const previewText = qrTexts.length ? qrTexts[0] : 'Hey gorgeous, wanna chat? 💕';
-  const previewPills = activePills.map(q => `<div style="background:#fff;border:1px solid #3b82f6;border-radius:20px;padding:5px 14px;font-size:13px;color:#3b82f6;font-weight:500;">${esc(q.label)}</div>`).join('');
-
-  return `<div class="container">
-    ${renderAlerts(req)}
-    <div class="card"><h2>💊 Quick Replies</h2>
-      <p style="color:#6b7280;font-size:13px;">Text message + tappable pills underneath. Fan taps one → resets 24h window → bot auto-replies. Pills disappear after tap.</p>
-      <div style="font-size:13px;color:#06b6d4;font-weight:600;margin-top:8px;">${items.length} pills · ${qrTexts.length} messages in pool</div>
-    </div>
-
-    <div class="card" style="border:2px solid #a5f3fc;background:#f0fdfa;">
-      <h2>👁️ Preview</h2>
-      <div style="max-width:320px;margin:0 auto;">
-        <div style="background:#3b82f6;color:#fff;padding:10px 16px;border-radius:18px;border-bottom-left-radius:4px;font-size:14px;display:inline-block;">${esc(previewText)}</div>
-        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
-          ${previewPills || '<span style="color:#94a3b8;font-size:12px;">Add pills below</span>'}
-        </div>
-      </div>
-    </div>
-
-    <div class="card" style="border:2px solid #a5f3fc;">
-      <h2>💬 Message Text Pool</h2>
-      <p style="color:#6b7280;font-size:12px;">Random text picked from this pool appears above the pills. One per line.</p>
-      <div style="margin-bottom:10px;">
-        ${qrTexts.map((t, i) => '<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;margin-bottom:4px;"><span style="flex:1;font-size:13px;color:#1a1d2e;">' + esc(t) + '</span><a href="/quick-reply-remove-text?index=' + i + '" onclick="return confirm(\'Remove?\')" style="color:#dc2626;text-decoration:none;font-weight:700;">×</a></div>').join('') || '<span style="color:#94a3b8;font-size:12px;">No messages yet — add some below.</span>'}
-      </div>
-      <form action="/quick-reply-add-text" method="POST">
-        <textarea name="texts" placeholder="Hey gorgeous, wanna chat? 💕&#10;I just posted new photos...&#10;Are you free tonight? 😊" style="min-height:80px;"></textarea>
-        <button type="submit" class="btn btn-green" style="margin-top:8px;">+ Add Messages</button>
-      </form>
-    </div>
-
-    <div class="card" style="border:2px solid #a5f3fc;">
-      <h2>💊 Pills (buttons fans can tap)</h2>
-      <div style="display:grid;gap:8px;margin-bottom:14px;">${chips || '<span style="color:#94a3b8;">None yet.</span>'}</div>
-      <form action="/quick-reply-add" method="POST" style="background:#ecfeff;border:1px solid #a5f3fc;border-radius:8px;padding:12px;">
-        <div style="font-size:13px;font-weight:600;color:#0e7490;margin-bottom:8px;">➕ Add a pill</div>
-        <div class="row">
-          <div><label>Pill Label (what fan sees)</label><input name="label" placeholder="💬 Chat" required/></div>
-          <div><label>When tapped, auto-reply with</label>
-            <select name="replyFormat">
-              <option value="card">📷 Card</option>
-              <option value="media">📷 Media Template</option>
-              <option value="text">💬 Text</option>
-              <option value="button-msg">💬 Button Message</option>
-            </select>
-          </div>
-        </div>
-        <button type="submit" class="btn btn-green" style="margin-top:8px;">+ Add Pill</button>
-      </form>
-    </div>
-  </div>`;
-}
 
 // ============================================
 // ROUTES: New Format Pages
@@ -3347,7 +3260,10 @@ function renderQuickRepliesPage(req) {
 app.post('/media-template-add', (req, res) => {
   const items = loadMediaTemplates();
   const mediaType = req.body.mediaType || 'image';
-  items.push({ photo: normalizeUrl(req.body.photo), mediaType, buttonText: req.body.buttonText || 'See My Photos', buttonUrl: normalizeUrl(req.body.buttonUrl), active: true });
+  const entry = { photo: normalizeUrl(req.body.photo), mediaType, buttonText: req.body.buttonText || 'See My Photos', buttonUrl: normalizeUrl(req.body.buttonUrl), active: true };
+  const idx = req.body.editIndex !== undefined && req.body.editIndex !== '' ? parseInt(req.body.editIndex) : -1;
+  if (idx >= 0 && items[idx]) { entry.active = items[idx].active; items[idx] = entry; }
+  else items.push(entry);
   saveMediaTemplates(items);
   res.redirect('/?page=media-templates&saved=1');
 });
@@ -3371,7 +3287,9 @@ app.post('/button-message-add', (req, res) => {
   if (req.body.btn1Title && req.body.btn1Url) buttons.push({ title: req.body.btn1Title, url: normalizeUrl(req.body.btn1Url) });
   if (req.body.btn2Title && req.body.btn2Url) buttons.push({ title: req.body.btn2Title, url: normalizeUrl(req.body.btn2Url) });
   if (req.body.btn3Title && req.body.btn3Url) buttons.push({ title: req.body.btn3Title, url: normalizeUrl(req.body.btn3Url) });
-  items.push({ id: 'bm_' + Date.now(), text: req.body.text, buttons, active: true });
+  const idx = req.body.editIndex !== undefined && req.body.editIndex !== '' ? parseInt(req.body.editIndex) : -1;
+  if (idx >= 0 && items[idx]) { items[idx].text = req.body.text; items[idx].buttons = buttons; }
+  else items.push({ id: 'bm_' + Date.now(), text: req.body.text, buttons, active: true });
   saveButtonMessages(items);
   res.redirect('/?page=button-messages&saved=1');
 });
@@ -3403,7 +3321,9 @@ app.post('/carousel-set-add', (req, res) => {
     });
   }
   if (cards.length < 2) return res.redirect('/?page=carousel-sets&error=Need+at+least+2+cards');
-  sets.push({ id: 'cs_' + Date.now(), name: req.body.name || 'Set ' + (sets.length + 1), cards, active: true });
+  const idx = req.body.editIndex !== undefined && req.body.editIndex !== '' ? parseInt(req.body.editIndex) : -1;
+  if (idx >= 0 && sets[idx]) { sets[idx].name = req.body.name || sets[idx].name; sets[idx].cards = cards; }
+  else sets.push({ id: 'cs_' + Date.now(), name: req.body.name || 'Set ' + (sets.length + 1), cards, active: true });
   saveCarouselSets(sets);
   res.redirect('/?page=carousel-sets&saved=1');
 });
