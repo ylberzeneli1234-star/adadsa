@@ -2791,47 +2791,50 @@ app.get('/remove-fan', (req, res) => {
   removeFan(req.query.page, req.query.psid, 'manual');
   res.redirect(`/?page=${req.query.page}&saved=1`);
 });
-app.post('/import-contacts', (req, res) => {
+async function importAllConversations(page) {
+  const MAX_PAGES = 100;
+  let url = `https://graph.facebook.com/v17.0/me/conversations?fields=participants&access_token=${page.accessToken}&limit=500`;
+  let count = 0;
+  let pageNum = 0;
+  while (url && pageNum < MAX_PAGES) {
+    const r = await fetch(url);
+    const data = await r.json();
+    (data.data || []).forEach(conv => {
+      (conv.participants?.data || []).forEach(p => {
+        if (p.id !== page.pageId && !isFanSaved(page.pageId, p.id)) {
+          saveFan(page.pageId, p.id);
+          count++;
+        }
+      });
+    });
+    url = data.paging?.next || null;
+    pageNum++;
+  }
+  return count;
+}
+app.post('/import-contacts', async (req, res) => {
   const page = getPage(req.body.pageId);
   if (!page) return res.redirect('/?error=Page+not+found');
-  fetch(`https://graph.facebook.com/v17.0/me/conversations?fields=participants&access_token=${page.accessToken}&limit=500`)
-    .then(r => r.json()).then(data => {
-      let count = 0;
-      (data.data || []).forEach(conv => {
-        (conv.participants?.data || []).forEach(p => {
-          if (p.id !== page.pageId && !isFanSaved(page.pageId, p.id)) {
-            saveFan(page.pageId, p.id);
-            count++;
-          }
-        });
-      });
-      res.redirect(`/?page=${page.pageId}&lib_msg=Imported+${count}+contacts`);
-    }).catch(e => {
-      console.error(`Import error [${page.label}]:`, e.message);
-      res.redirect(`/?page=${page.pageId}&error=Import+failed`);
-    });
+  try {
+    const count = await importAllConversations(page);
+    res.redirect(`/?page=${page.pageId}&lib_msg=Imported+${count}+contacts`);
+  } catch (e) {
+    console.error(`Import error [${page.label}]:`, e.message);
+    res.redirect(`/?page=${page.pageId}&error=Import+failed`);
+  }
 });
-app.post('/import-contacts-batch', (req, res) => {
+app.post('/import-contacts-batch', async (req, res) => {
   const pageIds = req.body.pageIds || [];
   const results = [];
-  Promise.all(pageIds.map(async (pid) => {
+  for (const pid of pageIds) {
     const page = getPage(pid);
-    if (!page) { results.push({ pageId: pid, ok: false, error: 'not found' }); return; }
+    if (!page) { results.push({ pageId: pid, ok: false, error: 'not found' }); continue; }
     try {
-      const r = await fetch(`https://graph.facebook.com/v17.0/me/conversations?fields=participants&access_token=${page.accessToken}&limit=500`);
-      const data = await r.json();
-      let count = 0;
-      (data.data || []).forEach(conv => {
-        (conv.participants?.data || []).forEach(p => {
-          if (p.id !== page.pageId && !isFanSaved(page.pageId, p.id)) {
-            saveFan(page.pageId, p.id);
-            count++;
-          }
-        });
-      });
+      const count = await importAllConversations(page);
       results.push({ pageId: pid, ok: true, imported: count });
     } catch (e) { results.push({ pageId: pid, ok: false, error: e.message }); }
-  })).then(() => res.json({ ok: true, results }));
+  }
+  res.json({ ok: true, results });
 });
 app.post('/clear-all-fans', (req, res) => {
   const pages = loadPages();
